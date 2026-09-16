@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -128,7 +129,9 @@ class FBManagerScreen extends StatefulWidget {
 
 class _FBManagerScreenState extends State<FBManagerScreen> {
   final TextEditingController _urlController = TextEditingController();
-  final ScrollController _scrollController = ScrollController();
+  final ItemScrollController _itemScrollController = ItemScrollController();
+  final ItemPositionsListener _itemPositionsListener =
+      ItemPositionsListener.create();
   final AudioPlayer _audioPlayer = AudioPlayer();
 
   List<GroupItem> _grupos = [];
@@ -138,8 +141,6 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   String? _statusMessage;
   bool _statusIsError = false;
   Timer? _statusTimer;
-
-  final GlobalKey _currentWidgetKey = GlobalKey();
 
   @override
   void initState() {
@@ -151,7 +152,6 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   void dispose() {
     _statusTimer?.cancel();
     _urlController.dispose();
-    _scrollController.dispose();
     _audioPlayer.dispose();
     super.dispose();
   }
@@ -329,33 +329,27 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       return;
     }
 
-    if (_currentWidgetKey.currentContext != null) {
-      Scrollable.ensureVisible(
-        _currentWidgetKey.currentContext!,
-        alignment: 0.3,
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeInOut,
+    final targetIndex = index + 1; // El índice 0 es el panel de control superior
+    if (_itemScrollController.isAttached) {
+      _itemScrollController.scrollTo(
+        index: targetIndex,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeInOutCubic,
+        alignment: 0.15,
       );
       _mostrarMensaje('ENFOCANDO...', isError: false);
     } else {
-      // Estimar desplazamiento al bloque de la cuenta
-      final accountIndex = index ~/ 25;
-      final targetOffset = 300.0 + (accountIndex * 1500.0);
-      _scrollController.animateTo(
-        targetOffset.clamp(0.0, _scrollController.position.maxScrollExtent),
-        duration: const Duration(milliseconds: 350),
-        curve: Curves.easeInOut,
-      );
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_currentWidgetKey.currentContext != null) {
-          Scrollable.ensureVisible(
-            _currentWidgetKey.currentContext!,
-            alignment: 0.3,
-            duration: const Duration(milliseconds: 200),
+        if (_itemScrollController.isAttached) {
+          _itemScrollController.scrollTo(
+            index: targetIndex,
+            duration: const Duration(milliseconds: 400),
+            curve: Curves.easeInOutCubic,
+            alignment: 0.15,
           );
+          _mostrarMensaje('ENFOCANDO...', isError: false);
         }
       });
-      _mostrarMensaje('ENFOCANDO...', isError: false);
     }
   }
 
@@ -795,31 +789,55 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
 
     return Scaffold(
       body: SafeArea(
-        child: ListView.builder(
-          controller: _scrollController,
-          padding: const EdgeInsets.fromLTRB(14, 20, 14, 60),
-          // El primer elemento (índice 0) es la cabecera, radar y panel de control.
-          // Los índices siguientes (1..totalCuentas) son las tarjetas de cuentas.
-          itemCount: 1 + totalCuentas,
+        child: ScrollablePositionedList.builder(
+          itemScrollController: _itemScrollController,
+          itemPositionsListener: _itemPositionsListener,
+          padding: const EdgeInsets.fromLTRB(14, 20, 14, 80),
+          itemCount: total == 0 ? 2 : 1 + total,
           itemBuilder: (context, index) {
             if (index == 0) {
               return _buildTopControlPanel(total, totalCuentas);
             }
 
-            final cuentaIndex = index - 1;
-            final startIdx = cuentaIndex * 25;
-            final endIdx = min(startIdx + 25, total);
-            final chunk = (startIdx < total)
-                ? _grupos.sublist(startIdx, endIdx)
-                : <GroupItem>[];
+            if (total == 0) {
+              return _buildCuentaCard(
+                cuentaNumero: 1,
+                startIdx: 0,
+                chunk: const [],
+              );
+            }
 
-            return _buildCuentaCard(
-              cuentaNumero: cuentaIndex + 1,
-              startIdx: startIdx,
-              chunk: chunk,
+            final globalIdx = index - 1;
+            final item = _grupos[globalIdx];
+            final localNum = (globalIdx % 25) + 1;
+            final cuentaNumero = (globalIdx ~/ 25) + 1;
+            final isFirstInCuenta = (globalIdx % 25) == 0;
+            final isLastInCuenta =
+                ((globalIdx % 25) == 24) || (globalIdx == total - 1);
+
+            return _buildGroupItemRow(
+              item: item,
+              localNum: localNum,
+              globalIdx: globalIdx,
+              cuentaNumero: cuentaNumero,
+              isFirstInCuenta: isFirstInCuenta,
+              isLastInCuenta: isLastInCuenta,
+              total: total,
             );
           },
         ),
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _irAlActual,
+        backgroundColor: CyberTheme.error,
+        foregroundColor: Colors.black,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(4),
+          side: const BorderSide(color: Colors.white, width: 2),
+        ),
+        elevation: 6,
+        tooltip: 'Ir al Actual',
+        child: const Icon(Icons.my_location, size: 26),
       ),
     );
   }
@@ -1213,6 +1231,119 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     );
   }
 
+  Widget _buildGroupItemRow({
+    required GroupItem item,
+    required int localNum,
+    required int globalIdx,
+    required int cuentaNumero,
+    required bool isFirstInCuenta,
+    required bool isLastInCuenta,
+    required int total,
+  }) {
+    final startIdx = (cuentaNumero - 1) * 25;
+    final endIdx = min(startIdx + 25, total);
+    final cuentaLength = endIdx - startIdx;
+    final isFull = cuentaLength == 25;
+
+    Widget? accountHeader;
+    if (isFirstInCuenta) {
+      accountHeader = Container(
+        margin: cuentaNumero > 1
+            ? const EdgeInsets.only(top: 16)
+            : EdgeInsets.zero,
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: const BoxDecoration(
+          color: CyberTheme.surfaceVariant,
+          border: Border(
+            top: BorderSide(color: CyberTheme.border, width: 3),
+            left: BorderSide(color: CyberTheme.border, width: 3),
+            right: BorderSide(color: CyberTheme.border, width: 3),
+            bottom: BorderSide(color: CyberTheme.border, width: 3),
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Color(0xFF333333),
+              offset: Offset(5, 0),
+              blurRadius: 0,
+              spreadRadius: 0,
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'CUENTA $cuentaNumero',
+              style: CyberTheme.mono(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: CyberTheme.primary,
+              ),
+            ),
+            Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 3,
+              ),
+              decoration: BoxDecoration(
+                color: isFull ? CyberTheme.greenActiveBg : CyberTheme.bg,
+                border: Border.all(
+                  color: isFull ? CyberTheme.secondary : CyberTheme.border,
+                  width: 2,
+                ),
+              ),
+              child: Text(
+                '$cuentaLength/25',
+                style: CyberTheme.mono(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: isFull ? CyberTheme.secondary : CyberTheme.text,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final groupRowContent = _buildGroupRow(
+      item,
+      localNum,
+      globalIdx,
+      isLastInCuenta,
+    );
+
+    final rowContainer = Container(
+      decoration: BoxDecoration(
+        color: CyberTheme.surface,
+        border: Border(
+          left: const BorderSide(color: CyberTheme.border, width: 3),
+          right: const BorderSide(color: CyberTheme.border, width: 3),
+          bottom: isLastInCuenta
+              ? const BorderSide(color: CyberTheme.border, width: 3)
+              : BorderSide.none,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFF333333),
+            offset: Offset(5, isLastInCuenta ? 5 : 0),
+            blurRadius: 0,
+            spreadRadius: 0,
+          ),
+        ],
+      ),
+      child: groupRowContent,
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        ?accountHeader,
+        rowContainer,
+      ],
+    );
+  }
+
   Widget _buildGroupRow(
     GroupItem item,
     int localNum,
@@ -1234,7 +1365,6 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     final bool isBad = item.status == 'bad';
 
     return Container(
-      key: isCurrent ? _currentWidgetKey : null,
       margin: isCurrent
           ? const EdgeInsets.symmetric(vertical: 5, horizontal: 2)
           : EdgeInsets.zero,
