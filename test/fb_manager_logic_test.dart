@@ -161,5 +161,31 @@ void main() {
       expect(FBUrlHelper.limpiarID('https://www.facebook.com/groups/ventas.madrid/'), 'ventas.madrid');
       expect(FBUrlHelper.limpiarID('ventas.madrid'), 'ventas.madrid');
     });
+
+    test('FBUrlHelper.sanearGrupos sanea listas y detecta si hubo cambios', () {
+      final listaSucia = [
+        {'url': 'https://m.facebook.com/groups/12345/?mibextid=123', 'status': 'good'},
+        {'url': 'https://facebook.com/groups/limpio/', 'status': 'regular'},
+        'https://facebook.com/share/g/xyz999/?ref=share',
+      ];
+
+      final res = FBUrlHelper.sanearGrupos(listaSucia);
+      expect(res.huboCambios, isTrue);
+      expect(res.items.length, 3);
+      expect(res.items[0].url, 'https://facebook.com/groups/12345/');
+      expect(res.items[0].status, 'good');
+      expect(res.items[1].url, 'https://facebook.com/groups/limpio/');
+      expect(res.items[1].status, 'regular');
+      expect(res.items[2].url, 'https://facebook.com/share/g/xyz999/');
+      expect(res.items[2].status, 'none');
+
+      // Lista ya saneada
+      final listaLimpia = [
+        GroupItem(url: 'https://facebook.com/groups/12345/', status: 'good'),
+        GroupItem(url: 'https://facebook.com/groups/limpio/', status: 'regular'),
+      ];
+      final resLimpia = FBUrlHelper.sanearGrupos(listaLimpia);
+      expect(resLimpia.huboCambios, isFalse);
+    });
   });
 }

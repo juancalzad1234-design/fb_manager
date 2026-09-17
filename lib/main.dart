@@ -185,6 +185,31 @@ class FBUrlHelper {
         .split('/')[0]
         .toLowerCase();
   }
+
+  /// Sanea una lista de elementos (GroupItem, Map o String) asegurando que cada
+  /// URL esté limpia de parámetros de tracking y normalizada.
+  /// Retorna la lista resultante y un booleano indicando si hubo algún cambio.
+  static ({List<GroupItem> items, bool huboCambios}) sanearGrupos(
+    List<dynamic> rawList,
+  ) {
+    final List<GroupItem> lista = [];
+    bool huboCambios = false;
+
+    for (final item in rawList) {
+      final GroupItem g = item is GroupItem ? item : GroupItem.fromJson(item);
+      final original = g.url;
+      if (original.isNotEmpty) {
+        final saneada = sanearUrl(original);
+        if (original != saneada) {
+          huboCambios = true;
+          g.url = saneada;
+        }
+      }
+      lista.add(g);
+    }
+
+    return (items: lista, huboCambios: huboCambios);
+  }
 }
 
 // ==========================================
@@ -285,22 +310,42 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     final curr = prefs.getString('cyber_fb_current_url') ?? '';
 
     List<GroupItem> parsed = [];
+    bool seModificaronUrls = false;
+
     if (rawList != null && rawList.isNotEmpty) {
       try {
         final decoded = jsonDecode(rawList);
         if (decoded is List) {
-          parsed = decoded.map((item) => GroupItem.fromJson(item)).toList();
+          final resultado = FBUrlHelper.sanearGrupos(decoded);
+          parsed = resultado.items;
+          if (resultado.huboCambios) {
+            seModificaronUrls = true;
+          }
         }
       } catch (e) {
         debugPrint('Error parseando storage: $e');
       }
     }
 
+    final currSaneada = curr.isNotEmpty ? FBUrlHelper.sanearUrl(curr) : '';
+    if (curr.isNotEmpty && curr != currSaneada) {
+      seModificaronUrls = true;
+    }
+
     if (mounted) {
       setState(() {
         _grupos = parsed;
-        _urlActual = curr;
+        _urlActual = currSaneada;
       });
+    } else {
+      _grupos = parsed;
+      _urlActual = currSaneada;
+    }
+
+    if (seModificaronUrls) {
+      final encoded = jsonEncode(parsed.map((g) => g.toJson()).toList());
+      await prefs.setString('cyber_fb_list', encoded);
+      await prefs.setString('cyber_fb_current_url', currSaneada);
     }
   }
 
@@ -641,11 +686,17 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       final decoded = jsonDecode(raw.trim());
       if (decoded is List) {
         _vibrar(durationMs: 30);
+        final resultado = FBUrlHelper.sanearGrupos(decoded);
         setState(() {
-          _grupos = decoded.map((i) => GroupItem.fromJson(i)).toList();
+          _grupos = resultado.items;
         });
         _guardarDatos();
-        _mostrarMensaje('BASE DE DATOS CARGADA', isError: false);
+        _mostrarMensaje(
+          resultado.huboCambios
+              ? 'BASE DE DATOS CARGADA Y SANEADA'
+              : 'BASE DE DATOS CARGADA',
+          isError: false,
+        );
       } else {
         _mostrarMensaje('FORMATO NO VÁLIDO', isError: true);
       }
