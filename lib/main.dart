@@ -210,6 +210,25 @@ class FBUrlHelper {
 
     return (items: lista, huboCambios: huboCambios);
   }
+
+  /// Aleatoriza los grupos priorizando los activos:
+  /// Separa los grupos en dos subconjuntos:
+  /// - 'activos': grupos con estado distinto de 'bad' (ej. good, regular, none).
+  /// - 'malos': grupos marcados explícitamente como 'bad'.
+  /// Aplica shuffle únicamente al conjunto de grupos 'activos' para mezclarlos aleatoriamente.
+  /// Concatena los grupos de modo que todos los 'activos' ocupen los primeros bloques
+  /// (las primeras cuentas de 25) y todos los grupos 'malos' queden relegados al final de la lista global.
+  static List<GroupItem> aleatorizarGrupos(
+    List<GroupItem> grupos, [
+    Random? random,
+  ]) {
+    final activos = grupos.where((g) => g.status != 'bad').toList();
+    final malos = grupos.where((g) => g.status == 'bad').toList();
+
+    activos.shuffle(random ?? Random());
+
+    return [...activos, ...malos];
+  }
 }
 
 // ==========================================
@@ -621,7 +640,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     _vibrar(durationMs: 40);
     if (_grupos.length <= 1) return;
     setState(() {
-      _grupos.shuffle(Random());
+      _grupos = FBUrlHelper.aleatorizarGrupos(_grupos);
     });
     _guardarDatos();
     _mostrarMensaje('GRUPOS ALEATORIZADOS', isError: false);

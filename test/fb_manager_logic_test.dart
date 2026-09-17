@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:fb_manager/main.dart';
 
@@ -186,6 +188,84 @@ void main() {
       ];
       final resLimpia = FBUrlHelper.sanearGrupos(listaLimpia);
       expect(resLimpia.huboCambios, isFalse);
+    });
+
+    test('Aleatorización de grupos prioriza activos y envía malos al final sin pérdidas ni duplicados', () {
+      final List<GroupItem> listaOriginal = [
+        GroupItem(url: 'https://facebook.com/groups/bad_1', status: 'bad'),
+        GroupItem(url: 'https://facebook.com/groups/good_1', status: 'good'),
+        GroupItem(url: 'https://facebook.com/groups/bad_2', status: 'bad'),
+        GroupItem(url: 'https://facebook.com/groups/regular_1', status: 'regular'),
+        GroupItem(url: 'https://facebook.com/groups/none_1', status: 'none'),
+        GroupItem(url: 'https://facebook.com/groups/good_2', status: 'good'),
+        GroupItem(url: 'https://facebook.com/groups/bad_3', status: 'bad'),
+      ];
+
+      final resultado = FBUrlHelper.aleatorizarGrupos(listaOriginal);
+
+      // 1. Conservación de elementos: misma cantidad, sin duplicados ni pérdidas
+      expect(resultado.length, listaOriginal.length);
+      final urlsOriginales = listaOriginal.map((g) => g.url).toList()..sort();
+      final urlsResultado = resultado.map((g) => g.url).toList()..sort();
+      expect(urlsResultado, urlsOriginales);
+
+      expect(
+        resultado.where((g) => g.status == 'bad').length,
+        listaOriginal.where((g) => g.status == 'bad').length,
+      );
+      expect(
+        resultado.where((g) => g.status != 'bad').length,
+        listaOriginal.where((g) => g.status != 'bad').length,
+      );
+
+      // 2. Ningún grupo 'bad' aparece antes que los grupos activos
+      bool hayMalo = false;
+      for (final g in resultado) {
+        if (g.status == 'bad') {
+          hayMalo = true;
+        } else {
+          expect(hayMalo, isFalse, reason: "Ningún grupo activo debe aparecer después de un grupo 'bad'");
+        }
+      }
+
+      // Verificación directa de partición
+      final totalActivos = listaOriginal.where((g) => g.status != 'bad').length;
+      for (int i = 0; i < totalActivos; i++) {
+        expect(resultado[i].status, isNot('bad'));
+      }
+      for (int i = totalActivos; i < resultado.length; i++) {
+        expect(resultado[i].status, 'bad');
+      }
+    });
+
+    test('Aleatorización en bloques de 25 relega los grupos malos al final de las cuentas', () {
+      final List<GroupItem> listaGrande = [
+        ...List.generate(28, (i) => GroupItem(url: 'https://facebook.com/groups/active_$i', status: 'good')),
+        ...List.generate(7, (i) => GroupItem(url: 'https://facebook.com/groups/bad_$i', status: 'bad')),
+      ];
+      // Mezclar intencionalmente de entrada
+      listaGrande.shuffle(Random(42));
+
+      final resultado = FBUrlHelper.aleatorizarGrupos(listaGrande, Random(99));
+
+      expect(resultado.length, 35);
+      // Los primeros 25 (Cuenta 1 completa) deben ser todos activos
+      for (int i = 0; i < 25; i++) {
+        expect(resultado[i].status, isNot('bad'));
+      }
+      // Los siguientes 3 de Cuenta 2 deben ser activos
+      for (int i = 25; i < 28; i++) {
+        expect(resultado[i].status, isNot('bad'));
+      }
+      // Los últimos 7 deben ser malos
+      for (int i = 28; i < 35; i++) {
+        expect(resultado[i].status, 'bad');
+      }
+
+      // Todos los elementos conservados
+      final urlsOriginales = listaGrande.map((g) => g.url).toSet();
+      final urlsResultado = resultado.map((g) => g.url).toSet();
+      expect(urlsResultado, urlsOriginales);
     });
   });
 }
