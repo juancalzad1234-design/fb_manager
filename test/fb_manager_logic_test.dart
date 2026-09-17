@@ -98,5 +98,68 @@ void main() {
       expect(grupos[1].url, nuevoUrl);
       expect(grupos[1].status, 'none');
     });
+
+    test('Cálculo de cuenta y posición para reemplazo de grupos', () {
+      int calcularCuenta(int idx) => (idx ~/ 25) + 1;
+      int calcularPosicion(int idx) => (idx % 25) + 1;
+
+      // Primer grupo de Cuenta 1
+      expect(calcularCuenta(0), 1);
+      expect(calcularPosicion(0), 1);
+
+      // Último grupo de Cuenta 1
+      expect(calcularCuenta(24), 1);
+      expect(calcularPosicion(24), 25);
+
+      // Primer grupo de Cuenta 2
+      expect(calcularCuenta(25), 2);
+      expect(calcularPosicion(25), 1);
+
+      // Grupo en Cuenta 3 (índice 53 -> 25*2 + 3)
+      expect(calcularCuenta(53), 3);
+      expect(calcularPosicion(53), 4);
+    });
+
+    test('FBUrlHelper.sanearUrl elimina tracking y normaliza dominios', () {
+      // Enlace móvil con tracking ?ref=share&mibextid=...
+      final urlMovil = 'https://m.facebook.com/groups/12345/?ref=share&mibextid=wwXIfr';
+      expect(FBUrlHelper.sanearUrl(urlMovil), 'https://facebook.com/groups/12345/');
+
+      // Enlace de tipo share facebook.com/share/g/ID/
+      final urlShare = 'https://www.facebook.com/share/g/9XyZ123/?mibextid=A7c9';
+      expect(FBUrlHelper.sanearUrl(urlShare), 'https://facebook.com/share/g/9XyZ123/');
+
+      // Enlace fb.me/g/ID
+      final urlFbMe = 'https://fb.me/g/retrocomunidad?tracking=xyz';
+      expect(FBUrlHelper.sanearUrl(urlFbMe), 'https://facebook.com/groups/retrocomunidad/');
+
+      // Slug sin protocolo ni dominio
+      final slug = 'ventas_madrid';
+      expect(FBUrlHelper.sanearUrl(slug), 'https://facebook.com/groups/ventas_madrid/');
+
+      // Enlace con caracteres invisibles / espacios
+      final sucio = '\u200e https://facebook.com/groups/test_space/?rdid=123 \u200f';
+      expect(FBUrlHelper.sanearUrl(sucio), 'https://facebook.com/groups/test_space/');
+    });
+
+    test('FBUrlHelper.limpiarID detecta duplicados entre diferentes formatos de URL', () {
+      // Mismo ID en formato /groups/ y formato /share/g/
+      final id1 = FBUrlHelper.limpiarID('https://facebook.com/groups/12345/');
+      final id2 = FBUrlHelper.limpiarID('https://facebook.com/share/g/12345/?mibextid=abc');
+      final id3 = FBUrlHelper.limpiarID('https://m.facebook.com/groups/12345?ref=share');
+      final id4 = FBUrlHelper.limpiarID('https://fb.me/g/12345');
+
+      expect(id1, '12345');
+      expect(id2, '12345');
+      expect(id3, '12345');
+      expect(id4, '12345');
+      expect(id1 == id2, isTrue);
+      expect(id1 == id3, isTrue);
+      expect(id1 == id4, isTrue);
+
+      // Slug con nombre
+      expect(FBUrlHelper.limpiarID('https://www.facebook.com/groups/ventas.madrid/'), 'ventas.madrid');
+      expect(FBUrlHelper.limpiarID('ventas.madrid'), 'ventas.madrid');
+    });
   });
 }

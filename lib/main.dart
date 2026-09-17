@@ -91,6 +91,103 @@ class GroupItem {
 }
 
 // ==========================================
+// URL SANITIZATION & PARSING HELPER
+// ==========================================
+class FBUrlHelper {
+  /// Normaliza y sanea la URL eliminando espacios, caracteres ocultos y parámetros
+  /// de rastreo (tracking: ?ref=..., ?mibextid=..., &rdid=..., etc.).
+  /// Soporta enlaces directos, m.facebook.com, web.facebook.com,
+  /// facebook.com/share/g/..., fb.me/g/... y fb.com.
+  static String sanearUrl(String raw) {
+    String clean = raw.replaceAll(RegExp(r'[\u200e\u200f\s]'), '');
+    if (clean.isEmpty) return '';
+
+    // Si no tiene esquema, determinar si es dominio o solo ID/path
+    if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
+      if (RegExp(
+        r'^(www\.|m\.|web\.)?(facebook\.com|fb\.com|fb\.me)',
+        caseSensitive: false,
+      ).hasMatch(clean)) {
+        clean = 'https://$clean';
+      } else if (clean.toLowerCase().startsWith('share/g/')) {
+        clean = 'https://facebook.com/$clean';
+      } else if (clean.toLowerCase().startsWith('groups/')) {
+        clean = 'https://facebook.com/$clean';
+      } else {
+        clean = 'https://facebook.com/groups/${clean.replaceFirst(RegExp(r'^/+'), '')}';
+      }
+    }
+
+    try {
+      final uri = Uri.parse(clean);
+      final host = uri.host.toLowerCase();
+      final isFacebook = host.endsWith('facebook.com') ||
+          host == 'fb.com' ||
+          host == 'fb.me';
+
+      if (isFacebook) {
+        String path = uri.path;
+
+        // Soporte para fb.me/g/ID -> /groups/ID
+        if (host == 'fb.me' && path.toLowerCase().startsWith('/g/')) {
+          path = '/groups/${path.substring(3)}';
+        }
+
+        // Unificar dobles barras
+        path = path.replaceAll(RegExp(r'/+'), '/');
+
+        // Asegurar barra final si no la tiene
+        if (!path.endsWith('/')) {
+          path = '$path/';
+        }
+
+        return 'https://facebook.com$path';
+      } else {
+        final cleanUri = Uri(
+          scheme: uri.scheme.isNotEmpty ? uri.scheme : 'https',
+          host: uri.host,
+          port: uri.hasPort ? uri.port : null,
+          path: uri.path.endsWith('/') ? uri.path : '${uri.path}/',
+        );
+        return cleanUri.toString();
+      }
+    } catch (_) {
+      final sinQuery = clean.split('?')[0].split('#')[0];
+      return sinQuery.endsWith('/') ? sinQuery : '$sinQuery/';
+    }
+  }
+
+  /// Extrae el ID o slug unificado del grupo para evitar duplicados.
+  /// Identifica `/groups/<id>`, `/share/g/<id>`, `/g/<id>` y slugs directos.
+  static String limpiarID(String url) {
+    final clean = url.replaceAll(RegExp(r'[\u200e\u200f\s]'), '');
+    final sinQuery = clean.split('?')[0].split('#')[0];
+
+    // 1. Regex para capturar el ID tras /groups/, /share/g/ o /g/
+    final match = RegExp(
+      r'(?:facebook\.com|fb\.com|fb\.me)?/(?:groups|share/g|g)/([^/?#]+)',
+      caseSensitive: false,
+    ).firstMatch(sinQuery);
+
+    if (match != null && match.group(1) != null) {
+      return match.group(1)!.toLowerCase();
+    }
+
+    // 2. Fallback: remover prefijos comunes y tomar el primer segmento
+    return sinQuery
+        .replaceFirst(
+          RegExp(
+            r'^https?://(www\.|m\.|web\.)?(facebook\.com|fb\.com|fb\.me)/(groups/|share/g/|g/)?',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .split('/')[0]
+        .toLowerCase();
+  }
+}
+
+// ==========================================
 // ROOT APP
 // ==========================================
 class CyberFBManagerApp extends StatelessWidget {
@@ -235,33 +332,12 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   // ----------------------------------------------------
   // BUSINESS LOGIC
   // ----------------------------------------------------
-  String _limpiarID(String url) {
-    return url
-        .replaceAll(RegExp(r'[\u200e\u200f\s]'), '')
-        .replaceFirst(
-          RegExp(
-            r'^https?://(www\.|m\.)?facebook\.com/groups/',
-            caseSensitive: false,
-          ),
-          '',
-        )
-        .split('/')[0]
-        .split('?')[0]
-        .toLowerCase();
-  }
-
   void _agregarGrupo() {
-    String raw = _urlController.text.trim().replaceAll(
-      RegExp(r'[\u200e\u200f]'),
-      '',
-    );
+    final raw = _urlController.text.trim();
     if (raw.isEmpty) return;
 
-    if (!raw.startsWith('http')) {
-      raw = 'https://facebook.com/groups/${raw.replaceFirst(RegExp(r'^/+'), '')}';
-    }
-
-    final idNuevo = _limpiarID(raw);
+    final sanitized = FBUrlHelper.sanearUrl(raw);
+    final idNuevo = FBUrlHelper.limpiarID(sanitized);
     if (idNuevo.isEmpty) {
       _vibrar(durationMs: 50);
       _mostrarMensaje('ENLACE NO VÁLIDO', isError: true);
@@ -269,7 +345,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     }
 
     for (final g in _grupos) {
-      if (_limpiarID(g.url) == idNuevo) {
+      if (FBUrlHelper.limpiarID(g.url) == idNuevo) {
         _vibrar(durationMs: 60);
         _mostrarMensaje('GRUPO REPETIDO', isError: true);
         return;
@@ -281,10 +357,35 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     // Reemplazo automático si existe alguno marcado como 'bad'
     final indexMalo = _grupos.indexWhere((g) => g.status == 'bad');
     if (indexMalo != -1) {
-      _grupos[indexMalo] = GroupItem(url: raw, status: 'none');
-      _mostrarMensaje('UN GRUPO FUE REEMPLAZADO', isError: false);
+      final cuenta = (indexMalo ~/ 25) + 1;
+      final posEnCuenta = (indexMalo % 25) + 1;
+      final urlAnterior = _grupos[indexMalo].url;
+
+      _grupos[indexMalo] = GroupItem(url: sanitized, status: 'none');
+      _mostrarMensaje(
+        'REEMPLAZADO EN CUENTA $cuenta (#$posEnCuenta)',
+        isError: false,
+      );
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: CyberTheme.surface,
+            shape: Border.all(color: CyberTheme.secondary, width: 2),
+            duration: const Duration(seconds: 4),
+            content: Text(
+              'Reemplazado en Cuenta $cuenta (Posición #$posEnCuenta)\nAnterior: $urlAnterior',
+              style: CyberTheme.mono(
+                color: CyberTheme.secondary,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        );
+      }
     } else {
-      _grupos.add(GroupItem(url: raw, status: 'none'));
+      _grupos.add(GroupItem(url: sanitized, status: 'none'));
       _mostrarMensaje('AÑADIDO', isError: false);
     }
 
@@ -391,6 +492,84 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       }
     });
     _guardarDatos();
+  }
+
+  void _confirmarAleatorizarGrupos() {
+    _vibrar(durationMs: 25);
+    if (_grupos.length <= 1) {
+      _mostrarMensaje('SE NECESITAN AL MENOS 2 GRUPOS', isError: true);
+      return;
+    }
+
+    showDialog(
+      context: context,
+      barrierColor: const Color(0xCC000000),
+      builder: (ctx) {
+        return Dialog(
+          backgroundColor: CyberTheme.surface,
+          shape: const BeveledRectangleBorder(
+            side: BorderSide(color: CyberTheme.warning, width: 3),
+          ),
+          insetPadding: const EdgeInsets.symmetric(horizontal: 20),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'ALEATORIZAR GRUPOS',
+                  style: CyberTheme.mono(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: CyberTheme.warning,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Esta acción reorganizará todos los enlaces al azar y cambiará el orden de las cuentas de 25.\n\n¿Deseas continuar?',
+                  style: CyberTheme.mono(
+                    fontSize: 13,
+                    color: CyberTheme.textMuted,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    RetroButton(
+                      label: 'Cancelar',
+                      onPressed: () => Navigator.of(ctx).pop(),
+                      backgroundColor: CyberTheme.surfaceVariant,
+                      textColor: CyberTheme.text,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    RetroButton(
+                      label: 'Aleatorizar',
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        _aleatorizarGrupos();
+                      },
+                      backgroundColor: CyberTheme.warning,
+                      textColor: Colors.black,
+                      borderColor: CyberTheme.warning,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 10,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _aleatorizarGrupos() {
@@ -628,14 +807,15 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                     RetroButton(
                       label: 'Guardar',
                       onPressed: () {
-                        final nuevo = editController.text.trim().replaceAll(
-                          RegExp(r'[\u200e\u200f]'),
-                          '',
-                        );
-                        if (nuevo.isEmpty) return;
-                        String link = nuevo.startsWith('http')
-                            ? nuevo
-                            : 'https://facebook.com/groups/${nuevo.replaceFirst(RegExp(r'^/+'), '')}';
+                        final raw = editController.text.trim();
+                        if (raw.isEmpty) return;
+                        final link = FBUrlHelper.sanearUrl(raw);
+                        final idNuevo = FBUrlHelper.limpiarID(link);
+                        if (idNuevo.isEmpty) {
+                          _vibrar(durationMs: 50);
+                          _mostrarMensaje('ENLACE NO VÁLIDO', isError: true);
+                          return;
+                        }
 
                         Navigator.of(ctx).pop();
                         _vibrar(durationMs: 25);
@@ -990,7 +1170,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                   ),
                   RetroButton(
                     label: 'Aleatorizar',
-                    onPressed: _aleatorizarGrupos,
+                    onPressed: _confirmarAleatorizarGrupos,
                     backgroundColor: CyberTheme.bg,
                     textColor: CyberTheme.primary,
                     borderColor: CyberTheme.primary,

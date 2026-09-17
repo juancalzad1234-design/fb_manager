@@ -37,4 +37,28 @@ void main() {
 
     expect(find.text('ENFOCANDO...'), findsOneWidget);
   });
+
+  testWidgets('Botón Aleatorizar muestra diálogo de confirmación', (WidgetTester tester) async {
+    SharedPreferences.setMockInitialValues({
+      'cyber_fb_list': '[{"url":"https://facebook.com/groups/g1","status":"none"},{"url":"https://facebook.com/groups/g2","status":"none"}]',
+      'cyber_fb_current_url': '',
+    });
+    await tester.pumpWidget(const CyberFBManagerApp());
+    await tester.pumpAndSettle();
+
+    // Tap en Aleatorizar
+    await tester.tap(find.text('ALEATORIZAR'));
+    await tester.pumpAndSettle();
+
+    // Comprobar que aparece el diálogo de confirmación
+    expect(find.text('ALEATORIZAR GRUPOS'), findsOneWidget);
+    expect(find.text('CANCELAR'), findsOneWidget);
+
+    // Cancelar diálogo
+    await tester.tap(find.text('CANCELAR'));
+    await tester.pumpAndSettle();
+
+    // El diálogo debe cerrarse
+    expect(find.text('¿Deseas continuar?'), findsNothing);
+  });
 }
