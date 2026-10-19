@@ -269,6 +269,9 @@ class FBManagerScreen extends StatefulWidget {
 }
 
 class _FBManagerScreenState extends State<FBManagerScreen> {
+  static const String _prefsGroupsPerAccountKey = 'groups_per_account';
+  static const int _defaultGroupsPerAccount = 25;
+
   final TextEditingController _urlController = TextEditingController();
   final ItemScrollController _itemScrollController = ItemScrollController();
   final ItemPositionsListener _itemPositionsListener =
@@ -278,6 +281,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   List<GroupItem> _grupos = [];
   String _urlActual = '';
   int _agregadosSesion = 0;
+  int _groupsPerAccount = _defaultGroupsPerAccount;
 
   String? _statusMessage;
   bool _statusIsError = false;
@@ -327,6 +331,10 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     final prefs = await SharedPreferences.getInstance();
     final rawList = prefs.getString('cyber_fb_list');
     final curr = prefs.getString('cyber_fb_current_url') ?? '';
+    final savedLimit = prefs.getInt(_prefsGroupsPerAccountKey);
+    final validLimit = (savedLimit != null && savedLimit >= 1)
+        ? savedLimit
+        : _defaultGroupsPerAccount;
 
     List<GroupItem> parsed = [];
     bool seModificaronUrls = false;
@@ -355,10 +363,16 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       setState(() {
         _grupos = parsed;
         _urlActual = currSaneada;
+        _groupsPerAccount = validLimit;
       });
     } else {
       _grupos = parsed;
       _urlActual = currSaneada;
+      _groupsPerAccount = validLimit;
+    }
+
+    if (savedLimit == null || savedLimit < 1) {
+      await prefs.setInt(_prefsGroupsPerAccountKey, validLimit);
     }
 
     if (seModificaronUrls) {
@@ -373,6 +387,24 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     final encoded = jsonEncode(_grupos.map((g) => g.toJson()).toList());
     await prefs.setString('cyber_fb_list', encoded);
     await prefs.setString('cyber_fb_current_url', _urlActual);
+    await prefs.setInt(_prefsGroupsPerAccountKey, _groupsPerAccount);
+  }
+
+  Future<void> _actualizarGruposPorCuenta(
+    int nuevoLimite, {
+    String? mensaje,
+  }) async {
+    if (nuevoLimite < 1) return;
+    _vibrar(durationMs: 25);
+    setState(() {
+      _groupsPerAccount = nuevoLimite;
+    });
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_prefsGroupsPerAccountKey, _groupsPerAccount);
+    _mostrarMensaje(
+      mensaje ?? 'LÍMITE: $_groupsPerAccount GRUPOS/CUENTA',
+      isError: false,
+    );
   }
 
   // ----------------------------------------------------
@@ -421,8 +453,8 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     // Reemplazo automático si existe alguno marcado como 'bad'
     final indexMalo = _grupos.indexWhere((g) => g.status == 'bad');
     if (indexMalo != -1) {
-      final cuenta = (indexMalo ~/ 25) + 1;
-      final posEnCuenta = (indexMalo % 25) + 1;
+      final cuenta = (indexMalo ~/ _groupsPerAccount) + 1;
+      final posEnCuenta = (indexMalo % _groupsPerAccount) + 1;
       final urlAnterior = _grupos[indexMalo].url;
 
       _grupos[indexMalo] = GroupItem(url: sanitized, status: 'none');
@@ -454,14 +486,15 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     }
 
     // Progreso de misión diaria/sesión
-    if (_agregadosSesion < 25) {
+    if (_agregadosSesion < _groupsPerAccount) {
       _agregadosSesion++;
-      if (_agregadosSesion == 25) {
+      if (_agregadosSesion == _groupsPerAccount) {
         _reproducirSonidoVictoria();
+        final metaActual = _groupsPerAccount;
         Future.delayed(const Duration(seconds: 3), () {
           if (mounted) {
             setState(() {
-              _agregadosSesion = 26; // Oculta tras meta cumplida
+              _agregadosSesion = max(_groupsPerAccount, metaActual) + 1;
             });
           }
         });
@@ -590,7 +623,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Esta acción reorganizará todos los enlaces al azar y cambiará el orden de las cuentas de 25.\n\n¿Deseas continuar?',
+                  'Esta acción reorganizará todos los enlaces al azar y cambiará el orden de las cuentas de $_groupsPerAccount.\n\n¿Deseas continuar?',
                   style: CyberTheme.mono(
                     fontSize: 13,
                     color: CyberTheme.textMuted,
@@ -1029,13 +1062,201 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     );
   }
 
+  void _abrirModalGruposPorCuenta() {
+    _vibrar(durationMs: 20);
+    final limitController = TextEditingController(
+      text: '$_groupsPerAccount',
+    );
+    String? validationError;
+    const List<int> presets = [10, 15, 20, 25, 30];
+
+    showDialog(
+      context: context,
+      barrierColor: const Color(0xCC000000),
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (ctx, setModalState) {
+            void aplicarValor() {
+              final raw = limitController.text.trim();
+              final parsed = int.tryParse(raw);
+              if (parsed == null || parsed < 1) {
+                _vibrar(durationMs: 50);
+                setModalState(() {
+                  validationError = 'MÍNIMO 1 GRUPO POR CUENTA';
+                });
+                _mostrarMensaje('MÍNIMO 1 GRUPO POR CUENTA', isError: true);
+                return;
+              }
+              Navigator.of(ctx).pop();
+              _actualizarGruposPorCuenta(parsed);
+            }
+
+            return Dialog(
+              backgroundColor: CyberTheme.surface,
+              shape: const BeveledRectangleBorder(
+                side: BorderSide(color: CyberTheme.primary, width: 3),
+              ),
+              insetPadding: const EdgeInsets.symmetric(horizontal: 16),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(18),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'GRUPOS POR CUENTA',
+                      style: CyberTheme.mono(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: CyberTheme.primary,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Configura la cantidad de grupos asignados por perfil/cuenta (mínimo 1).',
+                      style: CyberTheme.mono(
+                        fontSize: 12,
+                        color: CyberTheme.textMuted,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: CyberTheme.bg,
+                        border: Border.all(
+                          color: validationError != null
+                              ? CyberTheme.error
+                              : CyberTheme.border,
+                          width: 2,
+                        ),
+                      ),
+                      child: TextField(
+                        key: const Key('groups_per_account_input'),
+                        controller: limitController,
+                        autofocus: true,
+                        keyboardType: TextInputType.number,
+                        style: CyberTheme.mono(
+                          fontSize: 15,
+                          fontWeight: FontWeight.bold,
+                        ),
+                        onChanged: (_) {
+                          if (validationError != null) {
+                            setModalState(() {
+                              validationError = null;
+                            });
+                          }
+                        },
+                        onSubmitted: (_) => aplicarValor(),
+                        decoration: const InputDecoration(
+                          contentPadding: EdgeInsets.all(10),
+                          border: InputBorder.none,
+                          hintText: 'EJ. 10, 15, 20, 25, 30...',
+                          hintStyle: TextStyle(
+                            fontFamily: 'monospace',
+                            color: CyberTheme.textMuted,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ),
+                    ),
+                    if (validationError != null) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        validationError!,
+                        style: CyberTheme.mono(
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          color: CyberTheme.error,
+                        ),
+                      ),
+                    ],
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: presets.map((preset) {
+                        final isSelected =
+                            limitController.text.trim() == '$preset';
+                        return RetroPillButton(
+                          label: '$preset',
+                          isActive: isSelected,
+                          activeBg: CyberTheme.primary,
+                          activeColor: Colors.black,
+                          onTap: () {
+                            _vibrar(durationMs: 15);
+                            setModalState(() {
+                              limitController.text = '$preset';
+                              validationError = null;
+                            });
+                          },
+                        );
+                      }).toList(),
+                    ),
+                    const SizedBox(height: 16),
+                    RetroButton(
+                      label: 'Restablecer a 25',
+                      onPressed: () {
+                        Navigator.of(ctx).pop();
+                        _actualizarGruposPorCuenta(
+                          _defaultGroupsPerAccount,
+                          mensaje: 'RESTABLECIDO A 25 GRUPOS/CUENTA',
+                        );
+                      },
+                      backgroundColor: CyberTheme.bg,
+                      textColor: CyberTheme.warning,
+                      borderColor: CyberTheme.warning,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 12,
+                        vertical: 10,
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        RetroButton(
+                          label: 'Cancelar',
+                          onPressed: () => Navigator.of(ctx).pop(),
+                          backgroundColor: CyberTheme.surfaceVariant,
+                          textColor: CyberTheme.text,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 8,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        RetroButton(
+                          label: 'Guardar',
+                          onPressed: aplicarValor,
+                          backgroundColor: CyberTheme.primary,
+                          textColor: Colors.black,
+                          borderColor: CyberTheme.primary,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 8,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
   // ----------------------------------------------------
   // BUILD
   // ----------------------------------------------------
   @override
   Widget build(BuildContext context) {
     final total = _grupos.length;
-    final totalCuentas = total == 0 ? 1 : ((total + 24) ~/ 25);
+    final totalCuentas = total == 0
+        ? 1
+        : ((total + _groupsPerAccount - 1) ~/ _groupsPerAccount);
 
     return Scaffold(
       body: SafeArea(
@@ -1059,11 +1280,12 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
 
             final globalIdx = index - 1;
             final item = _grupos[globalIdx];
-            final localNum = (globalIdx % 25) + 1;
-            final cuentaNumero = (globalIdx ~/ 25) + 1;
-            final isFirstInCuenta = (globalIdx % 25) == 0;
+            final localNum = (globalIdx % _groupsPerAccount) + 1;
+            final cuentaNumero = (globalIdx ~/ _groupsPerAccount) + 1;
+            final isFirstInCuenta = (globalIdx % _groupsPerAccount) == 0;
             final isLastInCuenta =
-                ((globalIdx % 25) == 24) || (globalIdx == total - 1);
+                ((globalIdx % _groupsPerAccount) == (_groupsPerAccount - 1)) ||
+                (globalIdx == total - 1);
 
             return _buildGroupItemRow(
               item: item,
@@ -1099,21 +1321,40 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Título principal Cyberpunk
-        Text(
-          'CYBER FB MANAGER PRO',
-          textAlign: TextAlign.center,
-          style: CyberTheme.mono(
-            fontSize: 22,
-            fontWeight: FontWeight.bold,
-            color: CyberTheme.primary,
-          ),
+        // Barra superior con título Cyberpunk y botón de configuración
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const SizedBox(width: 36),
+            Expanded(
+              child: Text(
+                'CYBER FB MANAGER PRO',
+                textAlign: TextAlign.center,
+                style: CyberTheme.mono(
+                  fontSize: 22,
+                  fontWeight: FontWeight.bold,
+                  color: CyberTheme.primary,
+                ),
+              ),
+            ),
+            IconButton(
+              onPressed: _abrirModalGruposPorCuenta,
+              tooltip: 'Grupos por cuenta',
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              padding: EdgeInsets.zero,
+              icon: const Icon(
+                Icons.settings,
+                color: CyberTheme.primary,
+                size: 22,
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 4),
 
         // Contador estadístico
         Text(
-          'TOTAL: $total GRUPOS • CUENTAS: $totalCuentas',
+          'TOTAL: $total GRUPOS • CUENTAS: $totalCuentas • $_groupsPerAccount/CTA',
           textAlign: TextAlign.center,
           style: CyberTheme.mono(
             fontSize: 12,
@@ -1246,6 +1487,13 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                     borderColor: CyberTheme.primary,
                   ),
                   RetroButton(
+                    label: 'Grupos por cuenta',
+                    onPressed: _abrirModalGruposPorCuenta,
+                    backgroundColor: CyberTheme.bg,
+                    textColor: CyberTheme.warning,
+                    borderColor: CyberTheme.warning,
+                  ),
+                  RetroButton(
                     label: 'Compartir',
                     onPressed: _compartirJSON,
                     backgroundColor: CyberTheme.surfaceVariant,
@@ -1282,11 +1530,11 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   // RADAR DE MISIÓN (ESTILO 8-BITS)
   // ==========================================
   Widget _buildMissionRadar(int totalGrupos) {
-    if (_agregadosSesion > 25) {
+    if (_agregadosSesion > _groupsPerAccount) {
       return const SizedBox.shrink();
     }
 
-    if (_agregadosSesion == 25) {
+    if (_agregadosSesion == _groupsPerAccount) {
       return Container(
         margin: const EdgeInsets.only(bottom: 16),
         padding: const EdgeInsets.all(12),
@@ -1313,8 +1561,8 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       );
     }
 
-    int faltan = 25 - (totalGrupos % 25);
-    if (faltan == 25 && totalGrupos > 0) faltan = 0;
+    int faltan = _groupsPerAccount - (totalGrupos % _groupsPerAccount);
+    if (faltan == _groupsPerAccount && totalGrupos > 0) faltan = 0;
 
     return CustomPaint(
       painter: DashedBorderPainter(
@@ -1343,7 +1591,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                     text: '$_agregadosSesion',
                     style: const TextStyle(color: CyberTheme.primary),
                   ),
-                  const TextSpan(text: '/25 AÑADIDOS HOY'),
+                  TextSpan(text: '/$_groupsPerAccount AÑADIDOS HOY'),
                 ],
               ),
             ),
@@ -1360,7 +1608,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
               )
             else if (totalGrupos > 0)
               Text(
-                'LAS CUENTAS ESTÁN LLENAS (MÚLTIPLO DE 25)',
+                'LAS CUENTAS ESTÁN LLENAS (MÚLTIPLO DE $_groupsPerAccount)',
                 textAlign: TextAlign.center,
                 style: CyberTheme.mono(
                   fontSize: 10,
@@ -1392,7 +1640,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     required int startIdx,
     required List<GroupItem> chunk,
   }) {
-    final bool isFull = chunk.length == 25;
+    final bool isFull = chunk.length == _groupsPerAccount;
 
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
@@ -1444,7 +1692,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                     ),
                   ),
                   child: Text(
-                    '${chunk.length}/25',
+                    '${chunk.length}/$_groupsPerAccount',
                     style: CyberTheme.mono(
                       fontSize: 12,
                       fontWeight: FontWeight.bold,
@@ -1490,10 +1738,10 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     required bool isLastInCuenta,
     required int total,
   }) {
-    final startIdx = (cuentaNumero - 1) * 25;
-    final endIdx = min(startIdx + 25, total);
+    final startIdx = (cuentaNumero - 1) * _groupsPerAccount;
+    final endIdx = min(startIdx + _groupsPerAccount, total);
     final cuentaLength = endIdx - startIdx;
-    final isFull = cuentaLength == 25;
+    final isFull = cuentaLength == _groupsPerAccount;
 
     Widget? accountHeader;
     if (isFirstInCuenta) {
@@ -1543,7 +1791,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                 ),
               ),
               child: Text(
-                '$cuentaLength/25',
+                '$cuentaLength/$_groupsPerAccount',
                 style: CyberTheme.mono(
                   fontSize: 12,
                   fontWeight: FontWeight.bold,
