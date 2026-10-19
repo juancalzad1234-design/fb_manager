@@ -109,8 +109,8 @@ void main() {
       expect(find.text('10/10'), findsWidgets);
       expect(prefs.getInt('groups_per_account'), 10);
 
-      // Abrir desde el icono de engranaje en la barra superior y restablecer a 25
-      await tester.tap(find.byIcon(Icons.settings));
+      // Abrir nuevamente desde el botón "GRUPOS POR CUENTA" y restablecer a 25
+      await tester.tap(find.text('GRUPOS POR CUENTA'));
       await tester.pumpAndSettle();
 
       await tester.tap(find.text('RESTABLECER A 25'));

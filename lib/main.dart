@@ -1321,34 +1321,15 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Barra superior con título Cyberpunk y botón de configuración
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const SizedBox(width: 36),
-            Expanded(
-              child: Text(
-                'CYBER FB MANAGER PRO',
-                textAlign: TextAlign.center,
-                style: CyberTheme.mono(
-                  fontSize: 22,
-                  fontWeight: FontWeight.bold,
-                  color: CyberTheme.primary,
-                ),
-              ),
-            ),
-            IconButton(
-              onPressed: _abrirModalGruposPorCuenta,
-              tooltip: 'Grupos por cuenta',
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              padding: EdgeInsets.zero,
-              icon: const Icon(
-                Icons.settings,
-                color: CyberTheme.primary,
-                size: 22,
-              ),
-            ),
-          ],
+        // Título principal Cyberpunk
+        Text(
+          'CYBER FB MANAGER PRO',
+          textAlign: TextAlign.center,
+          style: CyberTheme.mono(
+            fontSize: 22,
+            fontWeight: FontWeight.bold,
+            color: CyberTheme.primary,
+          ),
         ),
         const SizedBox(height: 4),
 
