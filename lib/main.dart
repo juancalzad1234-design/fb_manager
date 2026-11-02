@@ -13,6 +13,16 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'models/group_item.dart';
+import 'services/fb_url_helper.dart';
+import 'services/merge_groups.dart';
+import 'services/universal_import.dart';
+
+export 'models/group_item.dart';
+export 'services/fb_url_helper.dart';
+export 'services/merge_groups.dart';
+export 'services/universal_import.dart';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(
@@ -64,174 +74,6 @@ class CyberTheme {
 }
 
 // ==========================================
-// MODEL
-// ==========================================
-class GroupItem {
-  String url;
-  String status; // 'good', 'regular', 'bad', 'none'
-
-  GroupItem({required this.url, this.status = 'none'});
-
-  factory GroupItem.fromJson(dynamic json) {
-    if (json is String) {
-      return GroupItem(url: json, status: 'none');
-    }
-    if (json is Map) {
-      final url = (json['url'] ?? json['link'] ?? '').toString();
-      final status = (json['status'] ?? 'none').toString();
-      return GroupItem(url: url, status: status);
-    }
-    return GroupItem(url: '', status: 'none');
-  }
-
-  Map<String, dynamic> toJson() => {
-    'url': url,
-    'status': status,
-  };
-}
-
-// ==========================================
-// URL SANITIZATION & PARSING HELPER
-// ==========================================
-class FBUrlHelper {
-  /// Normaliza y sanea la URL eliminando espacios, caracteres ocultos y parámetros
-  /// de rastreo (tracking: ?ref=..., ?mibextid=..., &rdid=..., etc.).
-  /// Soporta enlaces directos, m.facebook.com, web.facebook.com,
-  /// facebook.com/share/g/..., fb.me/g/... y fb.com.
-  static String sanearUrl(String raw) {
-    String clean = raw.replaceAll(RegExp(r'[\u200e\u200f\s]'), '');
-    if (clean.isEmpty) return '';
-
-    // Si no tiene esquema, determinar si es dominio o solo ID/path
-    if (!clean.startsWith('http://') && !clean.startsWith('https://')) {
-      if (RegExp(
-        r'^(www\.|m\.|web\.)?(facebook\.com|fb\.com|fb\.me)',
-        caseSensitive: false,
-      ).hasMatch(clean)) {
-        clean = 'https://$clean';
-      } else if (clean.toLowerCase().startsWith('share/g/')) {
-        clean = 'https://facebook.com/$clean';
-      } else if (clean.toLowerCase().startsWith('groups/')) {
-        clean = 'https://facebook.com/$clean';
-      } else {
-        clean = 'https://facebook.com/groups/${clean.replaceFirst(RegExp(r'^/+'), '')}';
-      }
-    }
-
-    try {
-      final uri = Uri.parse(clean);
-      final host = uri.host.toLowerCase();
-      final isFacebook = host.endsWith('facebook.com') ||
-          host == 'fb.com' ||
-          host == 'fb.me';
-
-      if (isFacebook) {
-        String path = uri.path;
-
-        // Soporte para fb.me/g/ID -> /groups/ID
-        if (host == 'fb.me' && path.toLowerCase().startsWith('/g/')) {
-          path = '/groups/${path.substring(3)}';
-        }
-
-        // Unificar dobles barras
-        path = path.replaceAll(RegExp(r'/+'), '/');
-
-        // Asegurar barra final si no la tiene
-        if (!path.endsWith('/')) {
-          path = '$path/';
-        }
-
-        return 'https://facebook.com$path';
-      } else {
-        final cleanUri = Uri(
-          scheme: uri.scheme.isNotEmpty ? uri.scheme : 'https',
-          host: uri.host,
-          port: uri.hasPort ? uri.port : null,
-          path: uri.path.endsWith('/') ? uri.path : '${uri.path}/',
-        );
-        return cleanUri.toString();
-      }
-    } catch (_) {
-      final sinQuery = clean.split('?')[0].split('#')[0];
-      return sinQuery.endsWith('/') ? sinQuery : '$sinQuery/';
-    }
-  }
-
-  /// Extrae el ID o slug unificado del grupo para evitar duplicados.
-  /// Identifica `/groups/<id>`, `/share/g/<id>`, `/g/<id>` y slugs directos.
-  static String limpiarID(String url) {
-    final clean = url.replaceAll(RegExp(r'[\u200e\u200f\s]'), '');
-    final sinQuery = clean.split('?')[0].split('#')[0];
-
-    // 1. Regex para capturar el ID tras /groups/, /share/g/ o /g/
-    final match = RegExp(
-      r'(?:facebook\.com|fb\.com|fb\.me)?/(?:groups|share/g|g)/([^/?#]+)',
-      caseSensitive: false,
-    ).firstMatch(sinQuery);
-
-    if (match != null && match.group(1) != null) {
-      return match.group(1)!.toLowerCase();
-    }
-
-    // 2. Fallback: remover prefijos comunes y tomar el primer segmento
-    return sinQuery
-        .replaceFirst(
-          RegExp(
-            r'^https?://(www\.|m\.|web\.)?(facebook\.com|fb\.com|fb\.me)/(groups/|share/g/|g/)?',
-            caseSensitive: false,
-          ),
-          '',
-        )
-        .split('/')[0]
-        .toLowerCase();
-  }
-
-  /// Sanea una lista de elementos (GroupItem, Map o String) asegurando que cada
-  /// URL esté limpia de parámetros de tracking y normalizada.
-  /// Retorna la lista resultante y un booleano indicando si hubo algún cambio.
-  static ({List<GroupItem> items, bool huboCambios}) sanearGrupos(
-    List<dynamic> rawList,
-  ) {
-    final List<GroupItem> lista = [];
-    bool huboCambios = false;
-
-    for (final item in rawList) {
-      final GroupItem g = item is GroupItem ? item : GroupItem.fromJson(item);
-      final original = g.url;
-      if (original.isNotEmpty) {
-        final saneada = sanearUrl(original);
-        if (original != saneada) {
-          huboCambios = true;
-          g.url = saneada;
-        }
-      }
-      lista.add(g);
-    }
-
-    return (items: lista, huboCambios: huboCambios);
-  }
-
-  /// Aleatoriza los grupos priorizando los activos:
-  /// Separa los grupos en dos subconjuntos:
-  /// - 'activos': grupos con estado distinto de 'bad' (ej. good, regular, none).
-  /// - 'malos': grupos marcados explícitamente como 'bad'.
-  /// Aplica shuffle únicamente al conjunto de grupos 'activos' para mezclarlos aleatoriamente.
-  /// Concatena los grupos de modo que todos los 'activos' ocupen los primeros bloques
-  /// (las primeras cuentas de 25) y todos los grupos 'malos' queden relegados al final de la lista global.
-  static List<GroupItem> aleatorizarGrupos(
-    List<GroupItem> grupos, [
-    Random? random,
-  ]) {
-    final activos = grupos.where((g) => g.status != 'bad').toList();
-    final malos = grupos.where((g) => g.status == 'bad').toList();
-
-    activos.shuffle(random ?? Random());
-
-    return [...activos, ...malos];
-  }
-}
-
-// ==========================================
 // ROOT APP
 // ==========================================
 class CyberFBManagerApp extends StatelessWidget {
@@ -268,24 +110,60 @@ class FBManagerScreen extends StatefulWidget {
   State<FBManagerScreen> createState() => _FBManagerScreenState();
 }
 
+/// Copia del estado previo a una acción destructiva, para poder deshacerla.
+class _UndoSnapshot {
+  final List<GroupItem> grupos;
+  final String actual;
+  final int? mision;
+
+  _UndoSnapshot({required this.grupos, required this.actual, this.mision});
+}
+
+enum _Insercion { agregado, reemplazo, invalido, repetido }
+
+class _ResultadoInsercion {
+  final _Insercion tipo;
+  final int cuenta;
+  final int posicion;
+  final String urlAnterior;
+
+  const _ResultadoInsercion(
+    this.tipo, {
+    this.cuenta = 0,
+    this.posicion = 0,
+    this.urlAnterior = '',
+  });
+}
+
 class _FBManagerScreenState extends State<FBManagerScreen> {
   static const String _prefsGroupsPerAccountKey = 'groups_per_account';
+  static const String _prefsListKey = 'cyber_fb_list';
+  static const String _prefsBackupKey = 'cyber_fb_list_backup';
+  static const String _prefsCurrentKey = 'cyber_fb_current_url';
+  static const String _prefsMissionKey = 'cyber_fb_mission_count';
+  static const String _prefsAutoAdvanceKey = 'cyber_fb_auto_advance';
   static const int _defaultGroupsPerAccount = 25;
 
   final TextEditingController _urlController = TextEditingController();
+  final TextEditingController _searchController = TextEditingController();
   final ItemScrollController _itemScrollController = ItemScrollController();
-  final ItemPositionsListener _itemPositionsListener =
-      ItemPositionsListener.create();
   final AudioPlayer _audioPlayer = AudioPlayer();
 
   List<GroupItem> _grupos = [];
   String _urlActual = '';
   int _agregadosSesion = 0;
   int _groupsPerAccount = _defaultGroupsPerAccount;
+  bool _misionCompletada = false;
+  Timer? _celebracionTimer;
 
-  String? _statusMessage;
-  bool _statusIsError = false;
-  Timer? _statusTimer;
+  bool _autoAvanzar = false;
+  String _filtroEstado = 'all'; // all, none, good, regular, bad
+  String _busqueda = '';
+
+  _UndoSnapshot? _undo;
+  int _undoToken = 0;
+
+  Future<void> _guardando = Future<void>.value();
 
   @override
   void initState() {
@@ -295,8 +173,9 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
 
   @override
   void dispose() {
-    _statusTimer?.cancel();
+    _celebracionTimer?.cancel();
     _urlController.dispose();
+    _searchController.dispose();
     _audioPlayer.dispose();
     super.dispose();
   }
@@ -329,12 +208,17 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   // ----------------------------------------------------
   Future<void> _cargarDatos() async {
     final prefs = await SharedPreferences.getInstance();
-    final rawList = prefs.getString('cyber_fb_list');
-    final curr = prefs.getString('cyber_fb_current_url') ?? '';
+    final rawList = prefs.getString(_prefsListKey);
+    final curr = prefs.getString(_prefsCurrentKey) ?? '';
     final savedLimit = prefs.getInt(_prefsGroupsPerAccountKey);
     final validLimit = (savedLimit != null && savedLimit >= 1)
         ? savedLimit
         : _defaultGroupsPerAccount;
+    final savedMission = prefs.getInt(_prefsMissionKey) ?? 0;
+    final validMission = (savedMission >= 0 && savedMission < validLimit)
+        ? savedMission
+        : 0;
+    final auto = prefs.getBool(_prefsAutoAdvanceKey) ?? false;
 
     List<GroupItem> parsed = [];
     bool seModificaronUrls = false;
@@ -364,11 +248,15 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
         _grupos = parsed;
         _urlActual = currSaneada;
         _groupsPerAccount = validLimit;
+        _agregadosSesion = validMission;
+        _autoAvanzar = auto;
       });
     } else {
       _grupos = parsed;
       _urlActual = currSaneada;
       _groupsPerAccount = validLimit;
+      _agregadosSesion = validMission;
+      _autoAvanzar = auto;
     }
 
     if (savedLimit == null || savedLimit < 1) {
@@ -377,17 +265,48 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
 
     if (seModificaronUrls) {
       final encoded = jsonEncode(parsed.map((g) => g.toJson()).toList());
-      await prefs.setString('cyber_fb_list', encoded);
-      await prefs.setString('cyber_fb_current_url', currSaneada);
+      await prefs.setString(_prefsListKey, encoded);
+      await prefs.setString(_prefsCurrentKey, currSaneada);
     }
   }
 
-  Future<void> _guardarDatos() async {
-    final prefs = await SharedPreferences.getInstance();
+  /// Guarda el estado actual. Las escrituras se encolan para que se apliquen
+  /// siempre en el orden en que se pidieron.
+  Future<void> _guardarDatos() {
     final encoded = jsonEncode(_grupos.map((g) => g.toJson()).toList());
-    await prefs.setString('cyber_fb_list', encoded);
-    await prefs.setString('cyber_fb_current_url', _urlActual);
-    await prefs.setInt(_prefsGroupsPerAccountKey, _groupsPerAccount);
+    final actual = _urlActual;
+    final limite = _groupsPerAccount;
+    final mision = _agregadosSesion;
+    final auto = _autoAvanzar;
+
+    _guardando = _guardando.then((_) async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_prefsListKey, encoded);
+        await prefs.setString(_prefsCurrentKey, actual);
+        await prefs.setInt(_prefsGroupsPerAccountKey, limite);
+        await prefs.setInt(_prefsMissionKey, mision);
+        await prefs.setBool(_prefsAutoAdvanceKey, auto);
+      } catch (e) {
+        debugPrint('Error guardando datos: $e');
+        if (mounted) _mostrarMensaje('ERROR AL GUARDAR', isError: true);
+      }
+    });
+    return _guardando;
+  }
+
+  /// Copia de seguridad automática de la lista previa a una importación.
+  Future<void> _guardarBackup(List<GroupItem> previa) {
+    final encoded = jsonEncode(previa.map((g) => g.toJson()).toList());
+    _guardando = _guardando.then((_) async {
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_prefsBackupKey, encoded);
+      } catch (e) {
+        debugPrint('Error guardando backup: $e');
+      }
+    });
+    return _guardando;
   }
 
   Future<void> _actualizarGruposPorCuenta(
@@ -398,9 +317,9 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     _vibrar(durationMs: 25);
     setState(() {
       _groupsPerAccount = nuevoLimite;
+      if (_agregadosSesion >= nuevoLimite) _agregadosSesion = 0;
     });
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setInt(_prefsGroupsPerAccountKey, _groupsPerAccount);
+    await _guardarDatos();
     _mostrarMensaje(
       mensaje ?? 'LÍMITE: $_groupsPerAccount GRUPOS/CUENTA',
       isError: false,
@@ -408,102 +327,273 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   }
 
   // ----------------------------------------------------
-  // NOTIFICATIONS / STATUS
+  // NOTIFICATIONS / UNDO
   // ----------------------------------------------------
-  void _mostrarMensaje(String texto, {required bool isError}) {
-    _statusTimer?.cancel();
+  /// Muestra un mensaje flotante visible desde cualquier posición del scroll.
+  void _mostrarMensaje(
+    String texto, {
+    required bool isError,
+    bool deshacer = false,
+  }) {
+    if (!mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    if (messenger == null) return;
+
+    final color = isError ? CyberTheme.error : CyberTheme.secondary;
+    final token = ++_undoToken;
+
+    messenger.hideCurrentSnackBar();
+    final controller = messenger.showSnackBar(
+      SnackBar(
+        behavior: SnackBarBehavior.floating,
+        backgroundColor: CyberTheme.surface,
+        shape: Border.all(color: color, width: 2),
+        duration: Duration(seconds: deshacer ? 6 : 3),
+        action: deshacer
+            ? SnackBarAction(
+                label: 'DESHACER',
+                textColor: CyberTheme.warning,
+                onPressed: _deshacer,
+              )
+            : null,
+        content: Text(
+          texto,
+          style: CyberTheme.mono(
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+            color: color,
+          ),
+        ),
+      ),
+    );
+
+    if (deshacer) {
+      controller.closed.then((reason) {
+        if (reason != SnackBarClosedReason.action && token == _undoToken) {
+          _undo = null;
+        }
+      });
+    } else {
+      _undo = null;
+    }
+  }
+
+  void _guardarSnapshot({bool conMision = false}) {
+    _undo = _UndoSnapshot(
+      grupos: _grupos.map((g) => g.copy()).toList(),
+      actual: _urlActual,
+      mision: conMision ? _agregadosSesion : null,
+    );
+  }
+
+  void _deshacer() {
+    final u = _undo;
+    if (u == null) return;
+    _undo = null;
+    _vibrar(durationMs: 25);
     setState(() {
-      _statusMessage = texto;
-      _statusIsError = isError;
+      _grupos = u.grupos;
+      _urlActual = u.actual;
+      if (u.mision != null) _agregadosSesion = u.mision!;
     });
-    _statusTimer = Timer(const Duration(seconds: 4), () {
-      if (mounted) {
-        setState(() {
-          _statusMessage = null;
-        });
-      }
-    });
+    _guardarDatos();
+    _mostrarMensaje('ACCIÓN DESHECHA', isError: false);
   }
 
   // ----------------------------------------------------
   // BUSINESS LOGIC
   // ----------------------------------------------------
+  bool _esActual(GroupItem g) {
+    if (_urlActual.isEmpty || g.url.isEmpty) return false;
+    return FBUrlHelper.limpiarID(g.url) == FBUrlHelper.limpiarID(_urlActual);
+  }
+
+  bool _existeDuplicado(String url, {int? ignorarIndex}) {
+    final id = FBUrlHelper.limpiarID(url);
+    for (var i = 0; i < _grupos.length; i++) {
+      if (i == ignorarIndex) continue;
+      if (FBUrlHelper.limpiarID(_grupos[i].url) == id) return true;
+    }
+    return false;
+  }
+
+  List<int> _calcularVisibles() {
+    final q = _busqueda.trim().toLowerCase();
+    final out = <int>[];
+    for (var i = 0; i < _grupos.length; i++) {
+      final g = _grupos[i];
+      if (_filtroEstado != 'all' && g.status != _filtroEstado) continue;
+      if (q.isNotEmpty && !g.url.toLowerCase().contains(q)) continue;
+      out.add(i);
+    }
+    return out;
+  }
+
+  List<int> _conteoEstados(int start, int end) {
+    int good = 0, regular = 0, bad = 0, none = 0;
+    for (var i = start; i < end && i < _grupos.length; i++) {
+      switch (_grupos[i].status) {
+        case 'good':
+          good++;
+        case 'regular':
+          regular++;
+        case 'bad':
+          bad++;
+        default:
+          none++;
+      }
+    }
+    return [good, regular, bad, none];
+  }
+
+  /// Inserta un grupo: reemplaza el primero marcado 'bad' o lo añade al final.
+  /// No muestra mensajes ni guarda: lo hace quien llama.
+  _ResultadoInsercion _insertarGrupo(String raw, {String status = 'none'}) {
+    final sanitized = FBUrlHelper.sanearUrl(raw.trim());
+    final id = FBUrlHelper.limpiarID(sanitized);
+    if (id.isEmpty) return const _ResultadoInsercion(_Insercion.invalido);
+    if (_existeDuplicado(sanitized)) {
+      return const _ResultadoInsercion(_Insercion.repetido);
+    }
+
+    final indexMalo = _grupos.indexWhere((g) => g.status == 'bad');
+    if (indexMalo != -1) {
+      final pos = FBUrlHelper.cuentaYPosicion(indexMalo, _groupsPerAccount);
+      final anterior = _grupos[indexMalo].url;
+      if (_esActual(_grupos[indexMalo])) _urlActual = sanitized;
+      _grupos[indexMalo] = GroupItem(url: sanitized, status: status);
+      return _ResultadoInsercion(
+        _Insercion.reemplazo,
+        cuenta: pos.cuenta,
+        posicion: pos.posicion,
+        urlAnterior: anterior,
+      );
+    }
+
+    _grupos.add(GroupItem(url: sanitized, status: status));
+    return const _ResultadoInsercion(_Insercion.agregado);
+  }
+
+  /// Suma al contador de misión. Al llegar a la meta lo reinicia a 0 (ya
+  /// persistido) y muestra la celebración unos segundos.
+  void _sumarMision(int n) {
+    if (n <= 0) return;
+    _agregadosSesion += n;
+    if (_agregadosSesion >= _groupsPerAccount) {
+      _agregadosSesion = _agregadosSesion % _groupsPerAccount;
+      _reproducirSonidoVictoria();
+      _misionCompletada = true;
+      _celebracionTimer?.cancel();
+      _celebracionTimer = Timer(const Duration(seconds: 3), () {
+        if (mounted) setState(() => _misionCompletada = false);
+      });
+    }
+  }
+
   void _agregarGrupo() {
     final raw = _urlController.text.trim();
     if (raw.isEmpty) return;
 
-    final sanitized = FBUrlHelper.sanearUrl(raw);
-    final idNuevo = FBUrlHelper.limpiarID(sanitized);
-    if (idNuevo.isEmpty) {
-      _vibrar(durationMs: 50);
-      _mostrarMensaje('ENLACE NO VÁLIDO', isError: true);
+    final esMultiple =
+        raw.contains('\n') ||
+        raw.startsWith('[') ||
+        raw.startsWith('{') ||
+        FBUrlHelper.extraerEnlacesFB(raw).length > 1;
+
+    if (esMultiple) {
+      _agregarVarios(raw);
       return;
     }
 
-    for (final g in _grupos) {
-      if (FBUrlHelper.limpiarID(g.url) == idNuevo) {
+    final sanitized = FBUrlHelper.sanearUrl(raw);
+    final tienePosibleReemplazo = _grupos.any((g) => g.status == 'bad');
+    final idNuevo = FBUrlHelper.limpiarID(sanitized);
+    if (idNuevo.isNotEmpty &&
+        tienePosibleReemplazo &&
+        !_existeDuplicado(sanitized)) {
+      _guardarSnapshot(conMision: true);
+    }
+
+    final res = _insertarGrupo(raw);
+    switch (res.tipo) {
+      case _Insercion.invalido:
+        _vibrar(durationMs: 50);
+        _mostrarMensaje('ENLACE NO VÁLIDO', isError: true);
+        return;
+      case _Insercion.repetido:
         _vibrar(durationMs: 60);
         _mostrarMensaje('GRUPO REPETIDO', isError: true);
         return;
-      }
-    }
-
-    _vibrar(durationMs: 25);
-
-    // Reemplazo automático si existe alguno marcado como 'bad'
-    final indexMalo = _grupos.indexWhere((g) => g.status == 'bad');
-    if (indexMalo != -1) {
-      final cuenta = (indexMalo ~/ _groupsPerAccount) + 1;
-      final posEnCuenta = (indexMalo % _groupsPerAccount) + 1;
-      final urlAnterior = _grupos[indexMalo].url;
-
-      _grupos[indexMalo] = GroupItem(url: sanitized, status: 'none');
-      _mostrarMensaje(
-        'REEMPLAZADO EN CUENTA $cuenta (#$posEnCuenta)',
-        isError: false,
-      );
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            backgroundColor: CyberTheme.surface,
-            shape: Border.all(color: CyberTheme.secondary, width: 2),
-            duration: const Duration(seconds: 4),
-            content: Text(
-              'Reemplazado en Cuenta $cuenta (Posición #$posEnCuenta)\nAnterior: $urlAnterior',
-              style: CyberTheme.mono(
-                color: CyberTheme.secondary,
-                fontSize: 12,
-              ),
-            ),
-          ),
+      case _Insercion.reemplazo:
+        _vibrar(durationMs: 25);
+        _sumarMision(1);
+        _mostrarMensaje(
+          'REEMPLAZADO EN CUENTA ${res.cuenta} (#${res.posicion})\nANTERIOR: ${res.urlAnterior}',
+          isError: false,
+          deshacer: true,
         );
-      }
-    } else {
-      _grupos.add(GroupItem(url: sanitized, status: 'none'));
-      _mostrarMensaje('AÑADIDO', isError: false);
-    }
-
-    // Progreso de misión diaria/sesión
-    if (_agregadosSesion < _groupsPerAccount) {
-      _agregadosSesion++;
-      if (_agregadosSesion == _groupsPerAccount) {
-        _reproducirSonidoVictoria();
-        final metaActual = _groupsPerAccount;
-        Future.delayed(const Duration(seconds: 3), () {
-          if (mounted) {
-            setState(() {
-              _agregadosSesion = max(_groupsPerAccount, metaActual) + 1;
-            });
-          }
-        });
-      }
+      case _Insercion.agregado:
+        _vibrar(durationMs: 25);
+        _sumarMision(1);
+        _mostrarMensaje('AÑADIDO', isError: false);
     }
 
     _urlController.clear();
     _guardarDatos();
     setState(() {});
+  }
+
+  void _agregarVarios(String raw) {
+    final lectura = UniversalImporter.parse(raw);
+    if (lectura.items.isEmpty) {
+      _vibrar(durationMs: 50);
+      _mostrarMensaje('ENLACE NO VÁLIDO', isError: true);
+      return;
+    }
+
+    _guardarSnapshot(conMision: true);
+    int agregados = 0;
+    int repetidos = lectura.duplicadosEnArchivo;
+    for (final item in lectura.items) {
+      final res = _insertarGrupo(item.url, status: item.status);
+      if (res.tipo == _Insercion.repetido) {
+        repetidos++;
+      } else if (res.tipo != _Insercion.invalido) {
+        agregados++;
+      }
+    }
+
+    if (agregados == 0) {
+      _undo = null;
+      _vibrar(durationMs: 60);
+      _mostrarMensaje('AÑADIDOS: 0 · REPETIDOS: $repetidos', isError: true);
+      return;
+    }
+
+    _vibrar(durationMs: 25);
+    _sumarMision(agregados);
+    _mostrarMensaje(
+      'AÑADIDOS: $agregados · REPETIDOS: $repetidos',
+      isError: false,
+      deshacer: true,
+    );
+    _urlController.clear();
+    _guardarDatos();
+    setState(() {});
+  }
+
+  Future<void> _pegarDelPortapapeles() async {
+    _vibrar(durationMs: 20);
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final texto = data?.text?.trim() ?? '';
+    if (texto.isEmpty) {
+      _mostrarMensaje('PORTAPAPELES VACÍO', isError: true);
+      return;
+    }
+    setState(() {
+      _urlController.text = texto;
+      _urlController.selection = TextSelection.collapsed(offset: texto.length);
+    });
   }
 
   void _marcarActual(String url) {
@@ -514,6 +604,36 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     _guardarDatos();
   }
 
+  /// Desplaza la lista hasta el grupo con índice global [globalIdx].
+  /// Devuelve false si el grupo no es visible con el filtro actual.
+  bool _scrollAGlobal(int globalIdx, {String? mensajeExito}) {
+    final visibles = _calcularVisibles();
+    final pos = visibles.indexOf(globalIdx);
+    if (pos == -1) return false;
+    final targetIndex = pos + 1; // El índice 0 es el panel de control superior
+
+    void hacerScroll() {
+      _itemScrollController.scrollTo(
+        index: targetIndex,
+        duration: const Duration(milliseconds: 400),
+        curve: Curves.easeInOutCubic,
+        alignment: 0.15,
+      );
+      if (mensajeExito != null) {
+        _mostrarMensaje(mensajeExito, isError: false);
+      }
+    }
+
+    if (_itemScrollController.isAttached) {
+      hacerScroll();
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_itemScrollController.isAttached) hacerScroll();
+      });
+    }
+    return true;
+  }
+
   void _irAlActual() {
     _vibrar(durationMs: 35);
     if (_urlActual.isEmpty) {
@@ -521,34 +641,46 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       return;
     }
 
-    final index = _grupos.indexWhere((g) => g.url == _urlActual);
+    final index = _grupos.indexWhere(_esActual);
     if (index == -1) {
       _mostrarMensaje('NO ENCONTRADO EN LA LISTA', isError: true);
       return;
     }
 
-    final targetIndex = index + 1; // El índice 0 es el panel de control superior
-    if (_itemScrollController.isAttached) {
-      _itemScrollController.scrollTo(
-        index: targetIndex,
-        duration: const Duration(milliseconds: 400),
-        curve: Curves.easeInOutCubic,
-        alignment: 0.15,
-      );
-      _mostrarMensaje('ENFOCANDO...', isError: false);
-    } else {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (_itemScrollController.isAttached) {
-          _itemScrollController.scrollTo(
-            index: targetIndex,
-            duration: const Duration(milliseconds: 400),
-            curve: Curves.easeInOutCubic,
-            alignment: 0.15,
-          );
-          _mostrarMensaje('ENFOCANDO...', isError: false);
-        }
-      });
+    final ok = _scrollAGlobal(index, mensajeExito: 'ENFOCANDO...');
+    if (!ok) {
+      _mostrarMensaje('ACTUAL OCULTO POR EL FILTRO', isError: true);
     }
+  }
+
+  int _siguienteSinCalificar(int desde) {
+    final n = _grupos.length;
+    for (var k = 1; k <= n; k++) {
+      final i = (desde + k) % n;
+      if (_grupos[i].status == 'none' && !(i == desde && desde >= 0)) {
+        return i;
+      }
+    }
+    return -1;
+  }
+
+  Future<void> _abrirSiguienteSinCalificar() async {
+    _vibrar(durationMs: 30);
+    if (_grupos.isEmpty) {
+      _mostrarMensaje('AÚN NO HAY GRUPOS EN LA LISTA', isError: true);
+      return;
+    }
+    final desde = _grupos.indexWhere(_esActual);
+    final next = _siguienteSinCalificar(desde);
+    if (next == -1) {
+      _mostrarMensaje('NO HAY GRUPOS SIN CALIFICAR', isError: true);
+      return;
+    }
+    final visible = _scrollAGlobal(next);
+    if (!visible) {
+      _mostrarMensaje('SIGUIENTE FUERA DEL FILTRO ACTUAL', isError: false);
+    }
+    await _abrirEnFB(_grupos[next].url);
   }
 
   Future<void> _abrirEnFB(String url) async {
@@ -556,24 +688,32 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       _mostrarMensaje('ENLACE DAÑADO', isError: true);
       return;
     }
-    _marcarActual(url);
-    _vibrar(durationMs: 30);
+    final uri = Uri.tryParse(url);
+    if (uri == null || !uri.hasScheme) {
+      _mostrarMensaje('ENLACE DAÑADO', isError: true);
+      return;
+    }
 
-    final uri = Uri.parse(url);
+    _vibrar(durationMs: 30);
+    bool abierto = false;
     try {
-      final launched = await launchUrl(
-        uri,
-        mode: LaunchMode.externalApplication,
-      );
-      if (!launched) {
-        await launchUrl(uri, mode: LaunchMode.platformDefault);
-      }
+      abierto = await launchUrl(uri, mode: LaunchMode.externalApplication);
     } catch (_) {
+      abierto = false;
+    }
+    if (!abierto) {
       try {
-        await launchUrl(uri, mode: LaunchMode.platformDefault);
-      } catch (err) {
-        _mostrarMensaje('NO SE PUDO ABRIR ENLACE', isError: true);
+        abierto = await launchUrl(uri, mode: LaunchMode.platformDefault);
+      } catch (_) {
+        abierto = false;
       }
+    }
+
+    if (!mounted) return;
+    if (abierto) {
+      _marcarActual(url);
+    } else {
+      _mostrarMensaje('NO SE PUDO ABRIR ENLACE', isError: true);
     }
   }
 
@@ -581,14 +721,47 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     _vibrar(
       durationMs: estado == 'good' ? 15 : (estado == 'regular' ? 20 : 40),
     );
+    final eraActual = _esActual(_grupos[globalIndex]);
+    bool calificado = false;
     setState(() {
       if (_grupos[globalIndex].status == estado) {
         _grupos[globalIndex].status = 'none';
       } else {
         _grupos[globalIndex].status = estado;
+        calificado = true;
       }
     });
+
+    if (_autoAvanzar && eraActual && calificado) {
+      final next = _siguienteSinCalificar(globalIndex);
+      if (next != -1) {
+        setState(() {
+          _urlActual = _grupos[next].url;
+        });
+        _scrollAGlobal(next);
+      }
+    }
     _guardarDatos();
+  }
+
+  void _toggleAutoAvanzar() {
+    _vibrar(durationMs: 15);
+    setState(() {
+      _autoAvanzar = !_autoAvanzar;
+    });
+    _guardarDatos();
+    _mostrarMensaje(
+      _autoAvanzar
+          ? 'AVANZAR AL CALIFICAR: ACTIVADO'
+          : 'AVANZAR AL CALIFICAR: DESACTIVADO',
+      isError: false,
+    );
+  }
+
+  void _copiarEnlace(String url) {
+    Clipboard.setData(ClipboardData(text: url));
+    _vibrar(durationMs: 20);
+    _mostrarMensaje('ENLACE COPIADO', isError: false);
   }
 
   void _confirmarAleatorizarGrupos() {
@@ -602,68 +775,49 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       context: context,
       barrierColor: const Color(0xCC000000),
       builder: (ctx) {
-        return Dialog(
-          backgroundColor: CyberTheme.surface,
-          shape: const BeveledRectangleBorder(
-            side: BorderSide(color: CyberTheme.warning, width: 3),
-          ),
-          insetPadding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+        return CyberDialog(
+          title: 'ALEATORIZAR GRUPOS',
+          color: CyberTheme.warning,
+          titleSize: 18,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text(
+              'Esta acción reorganizará todos los enlaces al azar y cambiará el orden de las cuentas de $_groupsPerAccount.\n\n¿Deseas continuar?',
+              style: CyberTheme.mono(fontSize: 13, color: CyberTheme.textMuted),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Text(
-                  'ALEATORIZAR GRUPOS',
-                  style: CyberTheme.mono(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: CyberTheme.warning,
+                RetroButton(
+                  label: 'Cancelar',
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  backgroundColor: CyberTheme.surfaceVariant,
+                  textColor: CyberTheme.text,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
                   ),
                 ),
-                const SizedBox(height: 12),
-                Text(
-                  'Esta acción reorganizará todos los enlaces al azar y cambiará el orden de las cuentas de $_groupsPerAccount.\n\n¿Deseas continuar?',
-                  style: CyberTheme.mono(
-                    fontSize: 13,
-                    color: CyberTheme.textMuted,
+                const SizedBox(width: 14),
+                RetroButton(
+                  label: 'Aleatorizar',
+                  onPressed: () {
+                    Navigator.of(ctx).pop();
+                    _aleatorizarGrupos();
+                  },
+                  backgroundColor: CyberTheme.warning,
+                  textColor: Colors.black,
+                  borderColor: CyberTheme.warning,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
                   ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 24),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    RetroButton(
-                      label: 'Cancelar',
-                      onPressed: () => Navigator.of(ctx).pop(),
-                      backgroundColor: CyberTheme.surfaceVariant,
-                      textColor: CyberTheme.text,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 10,
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    RetroButton(
-                      label: 'Aleatorizar',
-                      onPressed: () {
-                        Navigator.of(ctx).pop();
-                        _aleatorizarGrupos();
-                      },
-                      backgroundColor: CyberTheme.warning,
-                      textColor: Colors.black,
-                      borderColor: CyberTheme.warning,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 10,
-                      ),
-                    ),
-                  ],
                 ),
               ],
             ),
-          ),
+          ],
         );
       },
     );
@@ -672,11 +826,63 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   void _aleatorizarGrupos() {
     _vibrar(durationMs: 40);
     if (_grupos.length <= 1) return;
+    _guardarSnapshot();
     setState(() {
       _grupos = FBUrlHelper.aleatorizarGrupos(_grupos);
     });
     _guardarDatos();
-    _mostrarMensaje('GRUPOS ALEATORIZADOS', isError: false);
+    _mostrarMensaje('GRUPOS ALEATORIZADOS', isError: false, deshacer: true);
+  }
+
+  void _confirmarReiniciarMision() {
+    _vibrar(durationMs: 20);
+    showDialog(
+      context: context,
+      barrierColor: const Color(0xCC000000),
+      builder: (ctx) {
+        return CyberDialog(
+          title: 'REINICIAR CONTADOR',
+          color: CyberTheme.warning,
+          titleSize: 16,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text(
+              'El contador de misión volverá a 0/$_groupsPerAccount. Tus grupos no se tocan.',
+              style: CyberTheme.mono(fontSize: 12, color: CyberTheme.textMuted),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                RetroButton(
+                  label: 'Cancelar',
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  backgroundColor: CyberTheme.surfaceVariant,
+                  textColor: CyberTheme.text,
+                ),
+                const SizedBox(width: 14),
+                RetroButton(
+                  label: 'Reiniciar',
+                  onPressed: () {
+                    Navigator.of(ctx).pop();
+                    setState(() {
+                      _agregadosSesion = 0;
+                      _misionCompletada = false;
+                    });
+                    _guardarDatos();
+                    _mostrarMensaje('CONTADOR REINICIADO', isError: false);
+                  },
+                  backgroundColor: CyberTheme.warning,
+                  textColor: Colors.black,
+                  borderColor: CyberTheme.warning,
+                ),
+              ],
+            ),
+          ],
+        );
+      },
+    );
   }
 
   // ----------------------------------------------------
@@ -684,22 +890,17 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   // ----------------------------------------------------
   Future<void> _compartirJSON() async {
     _vibrar(durationMs: 30);
-    final jsonStr = const JsonEncoder.withIndent('  ').convert(
-      _grupos.map((g) => g.toJson()).toList(),
-    );
+    final jsonStr = const JsonEncoder.withIndent('  ')
+        .convert(_grupos.map((g) => g.toJson()).toList());
     await SharePlus.instance.share(
-      ShareParams(
-        text: jsonStr,
-        subject: 'cyber_grupos.json',
-      ),
+      ShareParams(text: jsonStr, subject: 'cyber_grupos.json'),
     );
   }
 
   Future<void> _exportarJSON() async {
     _vibrar(durationMs: 25);
-    final jsonStr = const JsonEncoder.withIndent('  ').convert(
-      _grupos.map((g) => g.toJson()).toList(),
-    );
+    final jsonStr = const JsonEncoder.withIndent('  ')
+        .convert(_grupos.map((g) => g.toJson()).toList());
     try {
       final tempDir = await getTemporaryDirectory();
       final file = File('${tempDir.path}/cyber_grupos.json');
@@ -718,42 +919,124 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   }
 
   Future<void> _importarJSON() async {
+    String rawContent;
     try {
       final files = await FilePicker.pickFiles(
         type: FileType.custom,
-        allowedExtensions: ['json', 'txt'],
+        allowedExtensions: ['json', 'txt', 'csv'],
       );
       if (files.isEmpty) return;
 
       final file = files.first;
-      final rawContent = await file.xFile.readAsString();
-      _cargarDesdeStringJSON(rawContent);
+      rawContent = await file.xFile.readAsString();
     } catch (e) {
       _mostrarMensaje('ARCHIVO NO VÁLIDO', isError: true);
+      return;
     }
+    if (!mounted) return;
+    await _procesarImportacion(rawContent);
   }
 
-  void _cargarDesdeStringJSON(String raw) {
-    try {
-      final decoded = jsonDecode(raw.trim());
-      if (decoded is List) {
-        _vibrar(durationMs: 30);
-        final resultado = FBUrlHelper.sanearGrupos(decoded);
-        setState(() {
-          _grupos = resultado.items;
-        });
-        _guardarDatos();
-        _mostrarMensaje(
-          resultado.huboCambios
-              ? 'BASE DE DATOS CARGADA Y SANEADA'
-              : 'BASE DE DATOS CARGADA',
-          isError: false,
+  /// Punto único de entrada para importar: lee el contenido con el lector
+  /// universal, muestra un resumen y deja elegir Fusionar o Reemplazar.
+  Future<void> _procesarImportacion(String raw) async {
+    final lectura = UniversalImporter.parse(raw);
+    if (lectura.items.isEmpty) {
+      _vibrar(durationMs: 50);
+      _mostrarMensaje('NO SE ENCONTRARON GRUPOS', isError: true);
+      return;
+    }
+
+    final simulacion = fusionarGrupos(_grupos, lectura.items);
+    final repetidos = simulacion.repetidos + lectura.duplicadosEnArchivo;
+
+    _vibrar(durationMs: 25);
+    final accion = await showDialog<String>(
+      context: context,
+      barrierColor: const Color(0xCC000000),
+      builder: (ctx) {
+        return CyberDialog(
+          title: 'IMPORTAR DATOS',
+          color: CyberTheme.primary,
+          titleSize: 16,
+          children: [
+            Text(
+              'FORMATO: ${lectura.formato.toUpperCase()}\n'
+              'DETECTADOS: ${lectura.detectados}\n'
+              'NUEVOS: ${simulacion.nuevos}\n'
+              'REPETIDOS: $repetidos\n'
+              'INVÁLIDOS: ${lectura.invalidos}',
+              style: CyberTheme.mono(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'FUSIONAR añade solo los nuevos y conserva tus calificaciones.\n'
+              'REEMPLAZAR descarta tu lista actual (se puede deshacer).',
+              style: CyberTheme.mono(fontSize: 11, color: CyberTheme.textMuted),
+            ),
+            const SizedBox(height: 18),
+            Wrap(
+              alignment: WrapAlignment.end,
+              spacing: 10,
+              runSpacing: 10,
+              children: [
+                RetroButton(
+                  label: 'Cancelar',
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  backgroundColor: CyberTheme.surfaceVariant,
+                  textColor: CyberTheme.text,
+                ),
+                RetroButton(
+                  label: 'Reemplazar',
+                  onPressed: () => Navigator.of(ctx).pop('replace'),
+                  backgroundColor: CyberTheme.bg,
+                  textColor: CyberTheme.warning,
+                  borderColor: CyberTheme.warning,
+                ),
+                RetroButton(
+                  label: 'Fusionar',
+                  onPressed: () => Navigator.of(ctx).pop('merge'),
+                  backgroundColor: CyberTheme.primary,
+                  textColor: Colors.black,
+                  borderColor: CyberTheme.primary,
+                ),
+              ],
+            ),
+          ],
         );
-      } else {
-        _mostrarMensaje('FORMATO NO VÁLIDO', isError: true);
-      }
-    } catch (e) {
-      _mostrarMensaje('ERROR EN EL FORMATO', isError: true);
+      },
+    );
+
+    if (!mounted || accion == null) return;
+
+    _vibrar(durationMs: 30);
+    final previa = _grupos.map((g) => g.copy()).toList();
+    _guardarSnapshot();
+    _guardarBackup(previa);
+
+    if (accion == 'merge') {
+      setState(() {
+        _grupos = simulacion.items;
+      });
+      _guardarDatos();
+      final adoptados = simulacion.estadosAdoptados > 0
+          ? ' · ESTADOS: +${simulacion.estadosAdoptados}'
+          : '';
+      _mostrarMensaje(
+        'FUSIONADO: +${simulacion.nuevos} NUEVOS · $repetidos REPETIDOS$adoptados',
+        isError: false,
+        deshacer: true,
+      );
+    } else {
+      setState(() {
+        _grupos = lectura.items;
+      });
+      _guardarDatos();
+      _mostrarMensaje(
+        'LISTA REEMPLAZADA: ${lectura.items.length} GRUPOS',
+        isError: false,
+        deshacer: true,
+      );
     }
   }
 
@@ -766,76 +1049,62 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       context: context,
       barrierColor: const Color(0xCC000000),
       builder: (ctx) {
-        return Dialog(
-          backgroundColor: CyberTheme.surface,
-          shape: const BeveledRectangleBorder(
-            side: BorderSide(color: CyberTheme.error, width: 3),
-          ),
-          insetPadding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
+        return CyberDialog(
+          title: 'ELIMINAR GRUPO',
+          color: CyberTheme.error,
+          titleSize: 18,
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text(
+              'Podrás deshacerlo justo después de borrar.',
+              style: CyberTheme.mono(fontSize: 13, color: CyberTheme.textMuted),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 24),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Text(
-                  'ELIMINAR GRUPO',
-                  style: CyberTheme.mono(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: CyberTheme.error,
+                RetroButton(
+                  label: 'Cancelar',
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  backgroundColor: CyberTheme.surfaceVariant,
+                  textColor: CyberTheme.text,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
                   ),
                 ),
-                const SizedBox(height: 12),
-                Text(
-                  'Esta acción no se puede deshacer.',
-                  style: CyberTheme.mono(
-                    fontSize: 13,
-                    color: CyberTheme.textMuted,
+                const SizedBox(width: 14),
+                RetroButton(
+                  label: 'Borrar',
+                  onPressed: () {
+                    Navigator.of(ctx).pop();
+                    _vibrar(durationMs: 50);
+                    _guardarSnapshot();
+                    setState(() {
+                      if (_esActual(_grupos[globalIndex])) {
+                        _urlActual = '';
+                      }
+                      _grupos.removeAt(globalIndex);
+                    });
+                    _guardarDatos();
+                    _mostrarMensaje(
+                      'ELIMINADO',
+                      isError: false,
+                      deshacer: true,
+                    );
+                  },
+                  backgroundColor: CyberTheme.error,
+                  textColor: Colors.black,
+                  borderColor: CyberTheme.error,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 10,
                   ),
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 24),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    RetroButton(
-                      label: 'Cancelar',
-                      onPressed: () => Navigator.of(ctx).pop(),
-                      backgroundColor: CyberTheme.surfaceVariant,
-                      textColor: CyberTheme.text,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 10,
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    RetroButton(
-                      label: 'Borrar',
-                      onPressed: () {
-                        Navigator.of(ctx).pop();
-                        _vibrar(durationMs: 50);
-                        setState(() {
-                          if (_grupos[globalIndex].url == _urlActual) {
-                            _urlActual = '';
-                          }
-                          _grupos.removeAt(globalIndex);
-                        });
-                        _guardarDatos();
-                        _mostrarMensaje('ELIMINADO', isError: false);
-                      },
-                      backgroundColor: CyberTheme.error,
-                      textColor: Colors.black,
-                      borderColor: CyberTheme.error,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 10,
-                      ),
-                    ),
-                  ],
                 ),
               ],
             ),
-          ),
+          ],
         );
       },
     );
@@ -843,35 +1112,20 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
 
   void _abrirModalReemplazar(int globalIndex) {
     _vibrar(durationMs: 20);
-    final editController = TextEditingController(
-      text: _grupos[globalIndex].url,
-    );
+    final urlOriginal = _grupos[globalIndex].url;
 
     showDialog(
       context: context,
       barrierColor: const Color(0xCC000000),
       builder: (ctx) {
-        return Dialog(
-          backgroundColor: CyberTheme.surface,
-          shape: const BeveledRectangleBorder(
-            side: BorderSide(color: CyberTheme.primary, width: 3),
-          ),
-          insetPadding: const EdgeInsets.symmetric(horizontal: 20),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+        return TextControllerScope(
+          initialText: urlOriginal,
+          builder: (ctx, editController) {
+            return CyberDialog(
+              title: 'REEMPLAZAR GRUPO',
+              color: CyberTheme.primary,
+              titleSize: 16,
               children: [
-                Text(
-                  'REEMPLAZAR GRUPO',
-                  style: CyberTheme.mono(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: CyberTheme.primary,
-                  ),
-                ),
-                const SizedBox(height: 14),
                 Container(
                   decoration: BoxDecoration(
                     color: CyberTheme.bg,
@@ -919,11 +1173,17 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                           _mostrarMensaje('ENLACE NO VÁLIDO', isError: true);
                           return;
                         }
+                        if (_existeDuplicado(link, ignorarIndex: globalIndex)) {
+                          _vibrar(durationMs: 60);
+                          _mostrarMensaje('GRUPO REPETIDO', isError: true);
+                          return;
+                        }
 
                         Navigator.of(ctx).pop();
                         _vibrar(durationMs: 25);
+                        _guardarSnapshot();
                         setState(() {
-                          if (_grupos[globalIndex].url == _urlActual) {
+                          if (_esActual(_grupos[globalIndex])) {
                             _urlActual = link;
                           }
                           _grupos[globalIndex] = GroupItem(
@@ -932,7 +1192,11 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                           );
                         });
                         _guardarDatos();
-                        _mostrarMensaje('REEMPLAZADO', isError: false);
+                        _mostrarMensaje(
+                          'REEMPLAZADO',
+                          isError: false,
+                          deshacer: true,
+                        );
                       },
                       backgroundColor: CyberTheme.primary,
                       textColor: Colors.black,
@@ -945,8 +1209,8 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                   ],
                 ),
               ],
-            ),
-          ),
+            );
+          },
         );
       },
     );
@@ -954,35 +1218,29 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
 
   void _abrirModalTexto() {
     _vibrar(durationMs: 20);
-    final textController = TextEditingController(
-      text: jsonEncode(_grupos.map((g) => g.toJson()).toList()),
-    );
+    final textoInicial = jsonEncode(_grupos.map((g) => g.toJson()).toList());
 
     showDialog(
       context: context,
       barrierColor: const Color(0xCC000000),
       builder: (ctx) {
-        return Dialog(
-          backgroundColor: CyberTheme.surface,
-          shape: const BeveledRectangleBorder(
-            side: BorderSide(color: CyberTheme.primary, width: 3),
-          ),
-          insetPadding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Padding(
-            padding: const EdgeInsets.all(18),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
+        return TextControllerScope(
+          initialText: textoInicial,
+          builder: (ctx, textController) {
+            return CyberDialog(
+              title: 'RESPALDO EN TEXTO',
+              color: CyberTheme.primary,
+              titleSize: 16,
+              hPadding: 16,
               children: [
                 Text(
-                  'RESPALDO EN TEXTO',
+                  'Pega aquí cualquier JSON, lista de enlaces o CSV para importarlo.',
                   style: CyberTheme.mono(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: CyberTheme.primary,
+                    fontSize: 11,
+                    color: CyberTheme.textMuted,
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 Container(
                   height: 180,
                   decoration: BoxDecoration(
@@ -1001,8 +1259,10 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                   ),
                 ),
                 const SizedBox(height: 16),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                Wrap(
+                  alignment: WrapAlignment.spaceBetween,
+                  spacing: 8,
+                  runSpacing: 8,
                   children: [
                     RetroButton(
                       label: 'Copiar',
@@ -1024,6 +1284,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                       ),
                     ),
                     Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         RetroButton(
                           label: 'Cerrar',
@@ -1037,10 +1298,11 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                         ),
                         const SizedBox(width: 8),
                         RetroButton(
-                          label: 'Restaurar',
+                          label: 'Importar',
                           onPressed: () {
+                            final texto = textController.text;
                             Navigator.of(ctx).pop();
-                            _cargarDesdeStringJSON(textController.text);
+                            _procesarImportacion(texto);
                           },
                           backgroundColor: CyberTheme.primary,
                           textColor: Colors.black,
@@ -1055,8 +1317,8 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                   ],
                 ),
               ],
-            ),
-          ),
+            );
+          },
         );
       },
     );
@@ -1064,9 +1326,6 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
 
   void _abrirModalGruposPorCuenta() {
     _vibrar(durationMs: 20);
-    final limitController = TextEditingController(
-      text: '$_groupsPerAccount',
-    );
     String? validationError;
     const List<int> presets = [10, 15, 20, 25, 30];
 
@@ -1074,44 +1333,32 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       context: context,
       barrierColor: const Color(0xCC000000),
       builder: (ctx) {
-        return StatefulBuilder(
-          builder: (ctx, setModalState) {
-            void aplicarValor() {
-              final raw = limitController.text.trim();
-              final parsed = int.tryParse(raw);
-              if (parsed == null || parsed < 1) {
-                _vibrar(durationMs: 50);
-                setModalState(() {
-                  validationError = 'MÍNIMO 1 GRUPO POR CUENTA';
-                });
-                _mostrarMensaje('MÍNIMO 1 GRUPO POR CUENTA', isError: true);
-                return;
-              }
-              Navigator.of(ctx).pop();
-              _actualizarGruposPorCuenta(parsed);
-            }
+        return TextControllerScope(
+          initialText: '$_groupsPerAccount',
+          builder: (ctx, limitController) {
+            return StatefulBuilder(
+              builder: (ctx, setModalState) {
+                void aplicarValor() {
+                  final raw = limitController.text.trim();
+                  final parsed = int.tryParse(raw);
+                  if (parsed == null || parsed < 1) {
+                    _vibrar(durationMs: 50);
+                    setModalState(() {
+                      validationError = 'MÍNIMO 1 GRUPO POR CUENTA';
+                    });
+                    _mostrarMensaje('MÍNIMO 1 GRUPO POR CUENTA', isError: true);
+                    return;
+                  }
+                  Navigator.of(ctx).pop();
+                  _actualizarGruposPorCuenta(parsed);
+                }
 
-            return Dialog(
-              backgroundColor: CyberTheme.surface,
-              shape: const BeveledRectangleBorder(
-                side: BorderSide(color: CyberTheme.primary, width: 3),
-              ),
-              insetPadding: const EdgeInsets.symmetric(horizontal: 16),
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(18),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                return CyberDialog(
+                  title: 'GRUPOS POR CUENTA',
+                  color: CyberTheme.primary,
+                  titleSize: 16,
+                  hPadding: 16,
                   children: [
-                    Text(
-                      'GRUPOS POR CUENTA',
-                      style: CyberTheme.mono(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        color: CyberTheme.primary,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
                     Text(
                       'Configura la cantidad de grupos asignados por perfil/cuenta (mínimo 1).',
                       style: CyberTheme.mono(
@@ -1239,13 +1486,67 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                       ],
                     ),
                   ],
-                ),
-              ),
+                );
+              },
             );
           },
         );
       },
     );
+  }
+
+  Future<void> _abrirMenuDatos(BuildContext btnContext) async {
+    _vibrar(durationMs: 20);
+    final box = btnContext.findRenderObject() as RenderBox;
+    final overlay =
+        Overlay.of(btnContext).context.findRenderObject() as RenderBox;
+    final position = RelativeRect.fromRect(
+      Rect.fromPoints(
+        box.localToGlobal(Offset.zero, ancestor: overlay),
+        box.localToGlobal(box.size.bottomRight(Offset.zero), ancestor: overlay),
+      ),
+      Offset.zero & overlay.size,
+    );
+
+    PopupMenuItem<String> item(String value, String label, IconData icon) {
+      return PopupMenuItem<String>(
+        value: value,
+        child: Row(
+          children: [
+            Icon(icon, size: 16, color: CyberTheme.primary),
+            const SizedBox(width: 10),
+            Text(label, style: CyberTheme.mono(fontSize: 12)),
+          ],
+        ),
+      );
+    }
+
+    final seleccion = await showMenu<String>(
+      context: btnContext,
+      position: position,
+      color: CyberTheme.surface,
+      shape: const BeveledRectangleBorder(
+        side: BorderSide(color: CyberTheme.primary, width: 2),
+      ),
+      items: [
+        item('share', 'COMPARTIR', Icons.share),
+        item('save', 'GUARDAR EN ARCHIVO', Icons.save_alt),
+        item('load', 'CARGAR ARCHIVO', Icons.folder_open),
+        item('text', 'TEXTO / IMPORTAR', Icons.text_snippet),
+      ],
+    );
+
+    if (!mounted) return;
+    switch (seleccion) {
+      case 'share':
+        await _compartirJSON();
+      case 'save':
+        await _exportarJSON();
+      case 'load':
+        await _importarJSON();
+      case 'text':
+        _abrirModalTexto();
+    }
   }
 
   // ----------------------------------------------------
@@ -1257,35 +1558,44 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     final totalCuentas = total == 0
         ? 1
         : ((total + _groupsPerAccount - 1) ~/ _groupsPerAccount);
+    final visibles = _calcularVisibles();
 
     return Scaffold(
       body: SafeArea(
         child: ScrollablePositionedList.builder(
           itemScrollController: _itemScrollController,
-          itemPositionsListener: _itemPositionsListener,
           padding: const EdgeInsets.fromLTRB(14, 20, 14, 80),
-          itemCount: total == 0 ? 2 : 1 + total,
+          itemCount: 1 + (visibles.isEmpty ? 1 : visibles.length),
           itemBuilder: (context, index) {
             if (index == 0) {
               return _buildTopControlPanel(total, totalCuentas);
             }
 
-            if (total == 0) {
-              return _buildCuentaCard(
-                cuentaNumero: 1,
-                startIdx: 0,
-                chunk: const [],
-              );
+            if (visibles.isEmpty) {
+              return total == 0
+                  ? _buildCuentaVacia(
+                      titulo: 'CUENTA 1',
+                      badge: '0/$_groupsPerAccount',
+                      mensaje: 'SIN GRUPOS EN ESTA CUENTA',
+                    )
+                  : _buildCuentaVacia(
+                      titulo: 'FILTRO',
+                      badge: '0/$total',
+                      mensaje: 'NINGÚN GRUPO COINCIDE CON EL FILTRO',
+                    );
             }
 
-            final globalIdx = index - 1;
+            final pos = index - 1;
+            final globalIdx = visibles[pos];
             final item = _grupos[globalIdx];
             final localNum = (globalIdx % _groupsPerAccount) + 1;
             final cuentaNumero = (globalIdx ~/ _groupsPerAccount) + 1;
-            final isFirstInCuenta = (globalIdx % _groupsPerAccount) == 0;
+            final isFirstInCuenta =
+                pos == 0 ||
+                (visibles[pos - 1] ~/ _groupsPerAccount) != (cuentaNumero - 1);
             final isLastInCuenta =
-                ((globalIdx % _groupsPerAccount) == (_groupsPerAccount - 1)) ||
-                (globalIdx == total - 1);
+                pos == visibles.length - 1 ||
+                (visibles[pos + 1] ~/ _groupsPerAccount) != (cuentaNumero - 1);
 
             return _buildGroupItemRow(
               item: item,
@@ -1317,6 +1627,24 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   // ==========================================
   // TOP PANEL WIDGETS
   // ==========================================
+  Widget _buildConteos(List<int> c, {double fontSize = 11}) {
+    TextSpan span(String t, Color color) => TextSpan(
+      text: t,
+      style: TextStyle(color: color),
+    );
+    return Text.rich(
+      TextSpan(
+        style: CyberTheme.mono(fontSize: fontSize, fontWeight: FontWeight.bold),
+        children: [
+          span('✔${c[0]}', CyberTheme.secondary),
+          span('  ~${c[1]}', CyberTheme.warning),
+          span('  ✘${c[2]}', CyberTheme.error),
+          span('  ?${c[3]}', CyberTheme.textMuted),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTopControlPanel(int total, int totalCuentas) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1343,6 +1671,8 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
             color: CyberTheme.textMuted,
           ),
         ),
+        const SizedBox(height: 4),
+        Center(child: _buildConteos(_conteoEstados(0, total), fontSize: 12)),
         const SizedBox(height: 12),
 
         // Radar de Misión (8-Bits Tracker)
@@ -1369,10 +1699,11 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
             children: [
               // Fila de Entrada de Enlace
               Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Expanded(
                     child: Container(
-                      height: 44,
+                      constraints: const BoxConstraints(minHeight: 44),
                       decoration: BoxDecoration(
                         color: CyberTheme.bg,
                         border: Border.all(color: CyberTheme.border, width: 2),
@@ -1380,19 +1711,39 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                       child: TextField(
                         controller: _urlController,
                         style: CyberTheme.mono(fontSize: 13),
+                        minLines: 1,
+                        maxLines: 3,
+                        keyboardType: TextInputType.text,
+                        textInputAction: TextInputAction.done,
                         onSubmitted: (_) => _agregarGrupo(),
-                        decoration: const InputDecoration(
-                          hintText: 'PEGA EL ENLACE AQUÍ...',
-                          hintStyle: TextStyle(
+                        decoration: InputDecoration(
+                          hintText: 'PEGA EL ENLACE (O VARIOS)...',
+                          hintStyle: const TextStyle(
                             fontFamily: 'monospace',
                             color: CyberTheme.textMuted,
                             fontSize: 12,
                           ),
-                          contentPadding: EdgeInsets.symmetric(
+                          contentPadding: const EdgeInsets.symmetric(
                             horizontal: 10,
                             vertical: 12,
                           ),
                           border: InputBorder.none,
+                          suffixIconConstraints: const BoxConstraints(
+                            minWidth: 40,
+                            minHeight: 40,
+                          ),
+                          suffixIcon: Tooltip(
+                            message: 'Pegar del portapapeles',
+                            child: GestureDetector(
+                              behavior: HitTestBehavior.opaque,
+                              onTap: _pegarDelPortapapeles,
+                              child: const Icon(
+                                Icons.content_paste,
+                                size: 18,
+                                color: CyberTheme.primary,
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
@@ -1412,39 +1763,6 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                 ],
               ),
 
-              // Mensaje de estado dinámico
-              if (_statusMessage != null) ...[
-                const SizedBox(height: 10),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: _statusIsError
-                        ? CyberTheme.redActiveBg
-                        : CyberTheme.greenActiveBg,
-                    border: Border.all(
-                      color: _statusIsError
-                          ? CyberTheme.error
-                          : CyberTheme.secondary,
-                      width: 2,
-                    ),
-                  ),
-                  child: Text(
-                    _statusMessage!,
-                    textAlign: TextAlign.center,
-                    style: CyberTheme.mono(
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
-                      color: _statusIsError
-                          ? CyberTheme.error
-                          : CyberTheme.secondary,
-                    ),
-                  ),
-                ),
-              ],
-
               const SizedBox(height: 12),
 
               // Botones de acciones en grid horizontal envolvente
@@ -1461,6 +1779,13 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                     borderColor: CyberTheme.error,
                   ),
                   RetroButton(
+                    label: 'Siguiente',
+                    onPressed: _abrirSiguienteSinCalificar,
+                    backgroundColor: CyberTheme.secondary,
+                    textColor: Colors.black,
+                    borderColor: CyberTheme.secondary,
+                  ),
+                  RetroButton(
                     label: 'Aleatorizar',
                     onPressed: _confirmarAleatorizarGrupos,
                     backgroundColor: CyberTheme.bg,
@@ -1474,34 +1799,129 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                     textColor: CyberTheme.warning,
                     borderColor: CyberTheme.warning,
                   ),
-                  RetroButton(
-                    label: 'Compartir',
-                    onPressed: _compartirJSON,
-                    backgroundColor: CyberTheme.surfaceVariant,
-                    textColor: CyberTheme.text,
-                  ),
-                  RetroButton(
-                    label: 'Guardar',
-                    onPressed: _exportarJSON,
-                    backgroundColor: CyberTheme.surfaceVariant,
-                    textColor: CyberTheme.text,
-                  ),
-                  RetroButton(
-                    label: 'Cargar',
-                    onPressed: _importarJSON,
-                    backgroundColor: CyberTheme.surfaceVariant,
-                    textColor: CyberTheme.text,
-                  ),
-                  RetroButton(
-                    label: 'Texto',
-                    onPressed: _abrirModalTexto,
-                    backgroundColor: CyberTheme.surfaceVariant,
-                    textColor: CyberTheme.text,
+                  Builder(
+                    builder: (btnContext) => RetroButton(
+                      label: 'Datos ▾',
+                      onPressed: () => _abrirMenuDatos(btnContext),
+                      backgroundColor: CyberTheme.surfaceVariant,
+                      textColor: CyberTheme.text,
+                    ),
                   ),
                 ],
               ),
+
+              const SizedBox(height: 14),
+              _buildFiltroBar(),
             ],
           ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildFiltroBar() {
+    Widget chip(String label, String valor, Color color, Color activeBg) {
+      return RetroPillButton(
+        label: label,
+        isActive: _filtroEstado == valor,
+        activeBg: activeBg,
+        activeColor: color,
+        textColor: color,
+        onTap: () {
+          _vibrar(durationMs: 15);
+          setState(() => _filtroEstado = valor);
+        },
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          height: 38,
+          decoration: BoxDecoration(
+            color: CyberTheme.bg,
+            border: Border.all(color: CyberTheme.border, width: 2),
+          ),
+          child: TextField(
+            controller: _searchController,
+            style: CyberTheme.mono(fontSize: 12),
+            onChanged: (v) => setState(() => _busqueda = v),
+            decoration: InputDecoration(
+              hintText: 'BUSCAR EN LA LISTA...',
+              hintStyle: const TextStyle(
+                fontFamily: 'monospace',
+                color: CyberTheme.textMuted,
+                fontSize: 11,
+              ),
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 10,
+                vertical: 10,
+              ),
+              border: InputBorder.none,
+              prefixIcon: const Icon(
+                Icons.search,
+                size: 16,
+                color: CyberTheme.textMuted,
+              ),
+              prefixIconConstraints: const BoxConstraints(
+                minWidth: 32,
+                minHeight: 32,
+              ),
+              suffixIcon: _busqueda.isEmpty
+                  ? null
+                  : GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: () {
+                        _searchController.clear();
+                        setState(() => _busqueda = '');
+                      },
+                      child: const Icon(
+                        Icons.close,
+                        size: 16,
+                        color: CyberTheme.textMuted,
+                      ),
+                    ),
+              suffixIconConstraints: const BoxConstraints(
+                minWidth: 32,
+                minHeight: 32,
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            chip('Todos', 'all', CyberTheme.primary, CyberTheme.currentBg),
+            chip(
+              'Sin calif.',
+              'none',
+              CyberTheme.text,
+              CyberTheme.surfaceVariant,
+            ),
+            chip(
+              'Bien',
+              'good',
+              CyberTheme.secondary,
+              CyberTheme.greenActiveBg,
+            ),
+            chip(
+              'Medio',
+              'regular',
+              CyberTheme.warning,
+              CyberTheme.yellowActiveBg,
+            ),
+            chip('Mal', 'bad', CyberTheme.error, CyberTheme.redActiveBg),
+            RetroPillButton(
+              label: 'Auto ▶',
+              isActive: _autoAvanzar,
+              activeBg: const Color(0xFF00F0FF),
+              activeColor: Colors.black,
+              onTap: _toggleAutoAvanzar,
+            ),
+          ],
         ),
       ],
     );
@@ -1511,11 +1931,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   // RADAR DE MISIÓN (ESTILO 8-BITS)
   // ==========================================
   Widget _buildMissionRadar(int totalGrupos) {
-    if (_agregadosSesion > _groupsPerAccount) {
-      return const SizedBox.shrink();
-    }
-
-    if (_agregadosSesion == _groupsPerAccount) {
+    if (_misionCompletada) {
       return Container(
         margin: const EdgeInsets.only(bottom: 16),
         padding: const EdgeInsets.all(12),
@@ -1542,8 +1958,10 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       );
     }
 
-    int faltan = _groupsPerAccount - (totalGrupos % _groupsPerAccount);
-    if (faltan == _groupsPerAccount && totalGrupos > 0) faltan = 0;
+    final int faltan = FBUrlHelper.calcularFaltan(
+      totalGrupos,
+      _groupsPerAccount,
+    );
 
     return CustomPaint(
       painter: DashedBorderPainter(
@@ -1558,23 +1976,40 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
         color: CyberTheme.trackerBg,
         child: Column(
           children: [
-            RichText(
-              textAlign: TextAlign.center,
-              text: TextSpan(
-                style: CyberTheme.mono(
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                  color: CyberTheme.text,
-                ),
-                children: [
-                  const TextSpan(text: 'MISIÓN: '),
-                  TextSpan(
-                    text: '$_agregadosSesion',
-                    style: const TextStyle(color: CyberTheme.primary),
+            Row(
+              children: [
+                const SizedBox(width: 56),
+                Expanded(
+                  child: Text.rich(
+                    TextSpan(
+                      style: CyberTheme.mono(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: CyberTheme.text,
+                      ),
+                      children: [
+                        const TextSpan(text: 'MISIÓN: '),
+                        TextSpan(
+                          text: '$_agregadosSesion',
+                          style: const TextStyle(color: CyberTheme.primary),
+                        ),
+                        TextSpan(text: '/$_groupsPerAccount AÑADIDOS'),
+                      ],
+                    ),
+                    textAlign: TextAlign.center,
                   ),
-                  TextSpan(text: '/$_groupsPerAccount AÑADIDOS HOY'),
-                ],
-              ),
+                ),
+                SizedBox(
+                  width: 56,
+                  child: RetroPillButton(
+                    label: '↺',
+                    isActive: false,
+                    textColor: CyberTheme.warning,
+                    borderColor: CyberTheme.warning,
+                    onTap: _confirmarReiniciarMision,
+                  ),
+                ),
+              ],
             ),
             const SizedBox(height: 4),
             if (faltan > 0)
@@ -1616,13 +2051,11 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
   // ==========================================
   // CUENTA CARD & ITEMS
   // ==========================================
-  Widget _buildCuentaCard({
-    required int cuentaNumero,
-    required int startIdx,
-    required List<GroupItem> chunk,
+  Widget _buildCuentaVacia({
+    required String titulo,
+    required String badge,
+    required String mensaje,
   }) {
-    final bool isFull = chunk.length == _groupsPerAccount;
-
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       decoration: BoxDecoration(
@@ -1640,7 +2073,6 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Header de la cuenta
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
             decoration: const BoxDecoration(
@@ -1653,7 +2085,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
-                  'CUENTA $cuentaNumero',
+                  titulo,
                   style: CyberTheme.mono(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
@@ -1666,45 +2098,104 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                     vertical: 3,
                   ),
                   decoration: BoxDecoration(
-                    color: isFull ? CyberTheme.greenActiveBg : CyberTheme.bg,
-                    border: Border.all(
-                      color: isFull ? CyberTheme.secondary : CyberTheme.border,
-                      width: 2,
-                    ),
+                    color: CyberTheme.bg,
+                    border: Border.all(color: CyberTheme.border, width: 2),
                   ),
                   child: Text(
-                    '${chunk.length}/$_groupsPerAccount',
+                    badge,
                     style: CyberTheme.mono(
                       fontSize: 12,
                       fontWeight: FontWeight.bold,
-                      color: isFull ? CyberTheme.secondary : CyberTheme.text,
+                      color: CyberTheme.text,
                     ),
                   ),
                 ),
               ],
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.all(16),
+            child: Text(
+              mensaje,
+              textAlign: TextAlign.center,
+              style: CyberTheme.mono(fontSize: 11, color: CyberTheme.textMuted),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-          // Elementos de la lista de esta cuenta
-          if (chunk.isEmpty)
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                'SIN GRUPOS EN ESTA CUENTA',
-                textAlign: TextAlign.center,
-                style: CyberTheme.mono(
-                  fontSize: 11,
-                  color: CyberTheme.textMuted,
+  Widget _buildCuentaHeader({
+    required int cuentaNumero,
+    required int startIdx,
+    required int endIdx,
+  }) {
+    final cuentaLength = endIdx - startIdx;
+    final isFull = cuentaLength == _groupsPerAccount;
+
+    return Container(
+      margin: cuentaNumero > 1
+          ? const EdgeInsets.only(top: 16)
+          : EdgeInsets.zero,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: const BoxDecoration(
+        color: CyberTheme.surfaceVariant,
+        border: Border(
+          top: BorderSide(color: CyberTheme.border, width: 3),
+          left: BorderSide(color: CyberTheme.border, width: 3),
+          right: BorderSide(color: CyberTheme.border, width: 3),
+          bottom: BorderSide(color: CyberTheme.border, width: 3),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Color(0xFF333333),
+            offset: Offset(5, 0),
+            blurRadius: 0,
+            spreadRadius: 0,
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Expanded(
+            child: Wrap(
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: 10,
+              runSpacing: 2,
+              children: [
+                Text(
+                  'CUENTA $cuentaNumero',
+                  style: CyberTheme.mono(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: CyberTheme.primary,
+                  ),
                 ),
+                _buildConteos(_conteoEstados(startIdx, endIdx), fontSize: 11),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            decoration: BoxDecoration(
+              color: isFull ? CyberTheme.greenActiveBg : CyberTheme.bg,
+              border: Border.all(
+                color: isFull ? CyberTheme.secondary : CyberTheme.border,
+                width: 2,
               ),
-            )
-          else
-            ...List.generate(chunk.length, (localIdx) {
-              final globalIdx = startIdx + localIdx;
-              final item = chunk[localIdx];
-              final isLast = localIdx == chunk.length - 1;
-              return _buildGroupRow(item, localIdx + 1, globalIdx, isLast);
-            }),
+            ),
+            child: Text(
+              '$cuentaLength/$_groupsPerAccount',
+              style: CyberTheme.mono(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: isFull ? CyberTheme.secondary : CyberTheme.text,
+              ),
+            ),
+          ),
         ],
       ),
     );
@@ -1719,69 +2210,14 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     required bool isLastInCuenta,
     required int total,
   }) {
-    final startIdx = (cuentaNumero - 1) * _groupsPerAccount;
-    final endIdx = min(startIdx + _groupsPerAccount, total);
-    final cuentaLength = endIdx - startIdx;
-    final isFull = cuentaLength == _groupsPerAccount;
-
     Widget? accountHeader;
     if (isFirstInCuenta) {
-      accountHeader = Container(
-        margin: cuentaNumero > 1
-            ? const EdgeInsets.only(top: 16)
-            : EdgeInsets.zero,
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-        decoration: const BoxDecoration(
-          color: CyberTheme.surfaceVariant,
-          border: Border(
-            top: BorderSide(color: CyberTheme.border, width: 3),
-            left: BorderSide(color: CyberTheme.border, width: 3),
-            right: BorderSide(color: CyberTheme.border, width: 3),
-            bottom: BorderSide(color: CyberTheme.border, width: 3),
-          ),
-          boxShadow: [
-            BoxShadow(
-              color: Color(0xFF333333),
-              offset: Offset(5, 0),
-              blurRadius: 0,
-              spreadRadius: 0,
-            ),
-          ],
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            Text(
-              'CUENTA $cuentaNumero',
-              style: CyberTheme.mono(
-                fontSize: 14,
-                fontWeight: FontWeight.bold,
-                color: CyberTheme.primary,
-              ),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 8,
-                vertical: 3,
-              ),
-              decoration: BoxDecoration(
-                color: isFull ? CyberTheme.greenActiveBg : CyberTheme.bg,
-                border: Border.all(
-                  color: isFull ? CyberTheme.secondary : CyberTheme.border,
-                  width: 2,
-                ),
-              ),
-              child: Text(
-                '$cuentaLength/$_groupsPerAccount',
-                style: CyberTheme.mono(
-                  fontSize: 12,
-                  fontWeight: FontWeight.bold,
-                  color: isFull ? CyberTheme.secondary : CyberTheme.text,
-                ),
-              ),
-            ),
-          ],
-        ),
+      final startIdx = (cuentaNumero - 1) * _groupsPerAccount;
+      final endIdx = min(startIdx + _groupsPerAccount, total);
+      accountHeader = _buildCuentaHeader(
+        cuentaNumero: cuentaNumero,
+        startIdx: startIdx,
+        endIdx: endIdx,
       );
     }
 
@@ -1816,10 +2252,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        ?accountHeader,
-        rowContainer,
-      ],
+      children: [?accountHeader, rowContainer],
     );
   }
 
@@ -1829,7 +2262,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
     int globalIdx,
     bool isLast,
   ) {
-    final bool isCurrent = item.url.isNotEmpty && item.url == _urlActual;
+    final bool isCurrent = _esActual(item);
 
     // Colores y bordes según estado
     Color? leftBorderColor;
@@ -1898,6 +2331,7 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
               Expanded(
                 child: GestureDetector(
                   onTap: () => _abrirEnFB(item.url),
+                  onLongPress: () => _copiarEnlace(item.url),
                   child: Opacity(
                     opacity: isBad ? 0.7 : 1.0,
                     child: Text(
@@ -1910,8 +2344,9 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
                         decoration: isBad
                             ? TextDecoration.lineThrough
                             : TextDecoration.none,
-                        fontWeight:
-                            isCurrent ? FontWeight.bold : FontWeight.normal,
+                        fontWeight: isCurrent
+                            ? FontWeight.bold
+                            : FontWeight.normal,
                       ),
                     ),
                   ),
@@ -2014,6 +2449,95 @@ class _FBManagerScreenState extends State<FBManagerScreen> {
 }
 
 // ==========================================
+// DIÁLOGO CYBER REUTILIZABLE
+// ==========================================
+class CyberDialog extends StatelessWidget {
+  final String title;
+  final Color color;
+  final double titleSize;
+  final double hPadding;
+  final CrossAxisAlignment crossAxisAlignment;
+  final List<Widget> children;
+
+  const CyberDialog({
+    super.key,
+    required this.title,
+    required this.color,
+    required this.children,
+    this.titleSize = 16,
+    this.hPadding = 20,
+    this.crossAxisAlignment = CrossAxisAlignment.start,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: CyberTheme.surface,
+      shape: BeveledRectangleBorder(side: BorderSide(color: color, width: 3)),
+      insetPadding: EdgeInsets.symmetric(horizontal: hPadding),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: crossAxisAlignment == CrossAxisAlignment.center
+              ? CrossAxisAlignment.stretch
+              : crossAxisAlignment,
+          children: [
+            Text(
+              title,
+              textAlign: crossAxisAlignment == CrossAxisAlignment.center
+                  ? TextAlign.center
+                  : TextAlign.start,
+              style: CyberTheme.mono(
+                fontSize: titleSize,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
+            ),
+            SizedBox(
+              height: crossAxisAlignment == CrossAxisAlignment.center ? 12 : 14,
+            ),
+            ...children,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Crea y libera un [TextEditingController] atado al ciclo de vida del widget
+/// (se descarta cuando el diálogo desaparece del árbol, tras la animación).
+class TextControllerScope extends StatefulWidget {
+  final String initialText;
+  final Widget Function(BuildContext context, TextEditingController controller)
+  builder;
+
+  const TextControllerScope({
+    super.key,
+    required this.initialText,
+    required this.builder,
+  });
+
+  @override
+  State<TextControllerScope> createState() => _TextControllerScopeState();
+}
+
+class _TextControllerScopeState extends State<TextControllerScope> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initialText,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(context, _controller);
+}
+
+// ==========================================
 // REUSABLE RETRO PILL BUTTON (TACTILE ACTIVE)
 // ==========================================
 class RetroPillButton extends StatefulWidget {
@@ -2056,8 +2580,9 @@ class _RetroPillButtonState extends State<RetroPillButton> {
         : (widget.textColor ?? CyberTheme.textMuted);
 
     final offset = _isPressed ? const Offset(2, 2) : Offset.zero;
-    final shadowOffset =
-        _isPressed ? const Offset(0.5, 0.5) : const Offset(2, 2);
+    final shadowOffset = _isPressed
+        ? const Offset(0.5, 0.5)
+        : const Offset(2, 2);
 
     return GestureDetector(
       onTapDown: (_) => setState(() => _isPressed = true),
@@ -2127,8 +2652,7 @@ class _RetroButtonState extends State<RetroButton> {
   @override
   Widget build(BuildContext context) {
     final offset = _isPressed ? const Offset(2, 2) : Offset.zero;
-    final shadowOffset =
-        _isPressed ? const Offset(1, 1) : const Offset(3, 3);
+    final shadowOffset = _isPressed ? const Offset(1, 1) : const Offset(3, 3);
 
     return GestureDetector(
       onTapDown: (_) => setState(() => _isPressed = true),

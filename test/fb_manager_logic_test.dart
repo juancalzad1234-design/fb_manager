@@ -19,136 +19,97 @@ void main() {
       expect(fromJson.status, 'good');
 
       // Test legacy string format
-      final fromString = GroupItem.fromJson('https://facebook.com/groups/retro');
+      final fromString = GroupItem.fromJson(
+        'https://facebook.com/groups/retro',
+      );
       expect(fromString.url, 'https://facebook.com/groups/retro');
       expect(fromString.status, 'none');
 
       // Test link field fallback
-      final fromLink = GroupItem.fromJson({'link': 'https://facebook.com/groups/test'});
+      final fromLink = GroupItem.fromJson({
+        'link': 'https://facebook.com/groups/test',
+      });
       expect(fromLink.url, 'https://facebook.com/groups/test');
     });
 
     test('Bloques de cuentas en grupos de 25', () {
-      final List<GroupItem> grupos = List.generate(
-        53,
-        (i) => GroupItem(url: 'https://facebook.com/groups/group_$i'),
-      );
-
-      final total = grupos.length;
-      final totalCuentas = (total + 24) ~/ 25;
-      expect(totalCuentas, 3); // 25 + 25 + 3 = 53
-
-      // Cuenta 1: 25 elementos
-      final chunk1 = grupos.sublist(0, 25);
-      expect(chunk1.length, 25);
-
-      // Cuenta 2: 25 elementos
-      final chunk2 = grupos.sublist(25, 50);
-      expect(chunk2.length, 25);
-
-      // Cuenta 3: 3 elementos restantes
-      final chunk3 = grupos.sublist(50, 53);
-      expect(chunk3.length, 3);
+      const total = 53;
+      final ultimo = FBUrlHelper.cuentaYPosicion(total - 1, 25);
+      expect(ultimo.cuenta, 3); // 25 + 25 + 3 = 53
+      expect(ultimo.posicion, 3);
+      expect(FBUrlHelper.cuentaYPosicion(24, 25).cuenta, 1);
+      expect(FBUrlHelper.cuentaYPosicion(25, 25).cuenta, 2);
+      expect(FBUrlHelper.cuentaYPosicion(50, 25), (cuenta: 3, posicion: 1));
     });
 
     test('Lógica de faltantes en Radar de Misión', () {
-      // Caso 1: 0 grupos
-      int total = 0;
-      int faltan = 25 - (total % 25);
-      if (faltan == 25 && total > 0) faltan = 0;
-      expect(faltan, 25);
-
-      // Caso 2: 12 grupos
-      total = 12;
-      faltan = 25 - (total % 25);
-      if (faltan == 25 && total > 0) faltan = 0;
-      expect(faltan, 13);
-
-      // Caso 3: 25 grupos exactos
-      total = 25;
-      faltan = 25 - (total % 25);
-      if (faltan == 25 && total > 0) faltan = 0;
-      expect(faltan, 0);
-
-      // Caso 4: 50 grupos exactos
-      total = 50;
-      faltan = 25 - (total % 25);
-      if (faltan == 25 && total > 0) faltan = 0;
-      expect(faltan, 0);
-
-      // Caso 5: 51 grupos
-      total = 51;
-      faltan = 25 - (total % 25);
-      if (faltan == 25 && total > 0) faltan = 0;
-      expect(faltan, 24);
-    });
-
-    test('Reemplazo automático de enlaces marcados como bad', () {
-      final List<GroupItem> grupos = [
-        GroupItem(url: 'https://facebook.com/groups/g1', status: 'good'),
-        GroupItem(url: 'https://facebook.com/groups/g2', status: 'bad'),
-        GroupItem(url: 'https://facebook.com/groups/g3', status: 'regular'),
-      ];
-
-      const nuevoUrl = 'https://facebook.com/groups/nuevo_grupo';
-      final indexMalo = grupos.indexWhere((g) => g.status == 'bad');
-      expect(indexMalo, 1);
-
-      grupos[indexMalo] = GroupItem(url: nuevoUrl, status: 'none');
-
-      expect(grupos.length, 3);
-      expect(grupos[1].url, nuevoUrl);
-      expect(grupos[1].status, 'none');
+      expect(FBUrlHelper.calcularFaltan(0, 25), 25);
+      expect(FBUrlHelper.calcularFaltan(12, 25), 13);
+      expect(FBUrlHelper.calcularFaltan(25, 25), 0);
+      expect(FBUrlHelper.calcularFaltan(50, 25), 0);
+      expect(FBUrlHelper.calcularFaltan(51, 25), 24);
+      // Con otros límites
+      expect(FBUrlHelper.calcularFaltan(7, 10), 3);
+      expect(FBUrlHelper.calcularFaltan(30, 10), 0);
     });
 
     test('Cálculo de cuenta y posición para reemplazo de grupos', () {
-      int calcularCuenta(int idx) => (idx ~/ 25) + 1;
-      int calcularPosicion(int idx) => (idx % 25) + 1;
-
-      // Primer grupo de Cuenta 1
-      expect(calcularCuenta(0), 1);
-      expect(calcularPosicion(0), 1);
-
-      // Último grupo de Cuenta 1
-      expect(calcularCuenta(24), 1);
-      expect(calcularPosicion(24), 25);
-
-      // Primer grupo de Cuenta 2
-      expect(calcularCuenta(25), 2);
-      expect(calcularPosicion(25), 1);
-
-      // Grupo en Cuenta 3 (índice 53 -> 25*2 + 3)
-      expect(calcularCuenta(53), 3);
-      expect(calcularPosicion(53), 4);
+      expect(FBUrlHelper.cuentaYPosicion(0, 25), (cuenta: 1, posicion: 1));
+      expect(FBUrlHelper.cuentaYPosicion(24, 25), (cuenta: 1, posicion: 25));
+      expect(FBUrlHelper.cuentaYPosicion(25, 25), (cuenta: 2, posicion: 1));
+      expect(FBUrlHelper.cuentaYPosicion(53, 25), (cuenta: 3, posicion: 4));
+      expect(FBUrlHelper.cuentaYPosicion(53, 10), (cuenta: 6, posicion: 4));
     });
 
     test('FBUrlHelper.sanearUrl elimina tracking y normaliza dominios', () {
       // Enlace móvil con tracking ?ref=share&mibextid=...
-      final urlMovil = 'https://m.facebook.com/groups/12345/?ref=share&mibextid=wwXIfr';
-      expect(FBUrlHelper.sanearUrl(urlMovil), 'https://facebook.com/groups/12345/');
+      final urlMovil =
+          'https://m.facebook.com/groups/12345/?ref=share&mibextid=wwXIfr';
+      expect(
+        FBUrlHelper.sanearUrl(urlMovil),
+        'https://facebook.com/groups/12345/',
+      );
 
       // Enlace de tipo share facebook.com/share/g/ID/
-      final urlShare = 'https://www.facebook.com/share/g/9XyZ123/?mibextid=A7c9';
-      expect(FBUrlHelper.sanearUrl(urlShare), 'https://facebook.com/share/g/9XyZ123/');
+      final urlShare =
+          'https://www.facebook.com/share/g/9XyZ123/?mibextid=A7c9';
+      expect(
+        FBUrlHelper.sanearUrl(urlShare),
+        'https://facebook.com/share/g/9XyZ123/',
+      );
 
       // Enlace fb.me/g/ID
       final urlFbMe = 'https://fb.me/g/retrocomunidad?tracking=xyz';
-      expect(FBUrlHelper.sanearUrl(urlFbMe), 'https://facebook.com/groups/retrocomunidad/');
+      expect(
+        FBUrlHelper.sanearUrl(urlFbMe),
+        'https://facebook.com/groups/retrocomunidad/',
+      );
 
       // Slug sin protocolo ni dominio
       final slug = 'ventas_madrid';
-      expect(FBUrlHelper.sanearUrl(slug), 'https://facebook.com/groups/ventas_madrid/');
+      expect(
+        FBUrlHelper.sanearUrl(slug),
+        'https://facebook.com/groups/ventas_madrid/',
+      );
 
       // Enlace con caracteres invisibles / espacios
-      final sucio = '\u200e https://facebook.com/groups/test_space/?rdid=123 \u200f';
-      expect(FBUrlHelper.sanearUrl(sucio), 'https://facebook.com/groups/test_space/');
+      final sucio =
+          '\u200e https://facebook.com/groups/test_space/?rdid=123 \u200f';
+      expect(
+        FBUrlHelper.sanearUrl(sucio),
+        'https://facebook.com/groups/test_space/',
+      );
     });
 
     test('FBUrlHelper.limpiarID detecta duplicados entre diferentes formatos de URL', () {
       // Mismo ID en formato /groups/ y formato /share/g/
       final id1 = FBUrlHelper.limpiarID('https://facebook.com/groups/12345/');
-      final id2 = FBUrlHelper.limpiarID('https://facebook.com/share/g/12345/?mibextid=abc');
-      final id3 = FBUrlHelper.limpiarID('https://m.facebook.com/groups/12345?ref=share');
+      final id2 = FBUrlHelper.limpiarID(
+        'https://facebook.com/share/g/12345/?mibextid=abc',
+      );
+      final id3 = FBUrlHelper.limpiarID(
+        'https://m.facebook.com/groups/12345?ref=share',
+      );
       final id4 = FBUrlHelper.limpiarID('https://fb.me/g/12345');
 
       expect(id1, '12345');
@@ -160,13 +121,19 @@ void main() {
       expect(id1 == id4, isTrue);
 
       // Slug con nombre
-      expect(FBUrlHelper.limpiarID('https://www.facebook.com/groups/ventas.madrid/'), 'ventas.madrid');
+      expect(
+        FBUrlHelper.limpiarID('https://www.facebook.com/groups/ventas.madrid/'),
+        'ventas.madrid',
+      );
       expect(FBUrlHelper.limpiarID('ventas.madrid'), 'ventas.madrid');
     });
 
     test('FBUrlHelper.sanearGrupos sanea listas y detecta si hubo cambios', () {
       final listaSucia = [
-        {'url': 'https://m.facebook.com/groups/12345/?mibextid=123', 'status': 'good'},
+        {
+          'url': 'https://m.facebook.com/groups/12345/?mibextid=123',
+          'status': 'good',
+        },
         {'url': 'https://facebook.com/groups/limpio/', 'status': 'regular'},
         'https://facebook.com/share/g/xyz999/?ref=share',
       ];
@@ -184,7 +151,10 @@ void main() {
       // Lista ya saneada
       final listaLimpia = [
         GroupItem(url: 'https://facebook.com/groups/12345/', status: 'good'),
-        GroupItem(url: 'https://facebook.com/groups/limpio/', status: 'regular'),
+        GroupItem(
+          url: 'https://facebook.com/groups/limpio/',
+          status: 'regular',
+        ),
       ];
       final resLimpia = FBUrlHelper.sanearGrupos(listaLimpia);
       expect(resLimpia.huboCambios, isFalse);
@@ -195,7 +165,10 @@ void main() {
         GroupItem(url: 'https://facebook.com/groups/bad_1', status: 'bad'),
         GroupItem(url: 'https://facebook.com/groups/good_1', status: 'good'),
         GroupItem(url: 'https://facebook.com/groups/bad_2', status: 'bad'),
-        GroupItem(url: 'https://facebook.com/groups/regular_1', status: 'regular'),
+        GroupItem(
+          url: 'https://facebook.com/groups/regular_1',
+          status: 'regular',
+        ),
         GroupItem(url: 'https://facebook.com/groups/none_1', status: 'none'),
         GroupItem(url: 'https://facebook.com/groups/good_2', status: 'good'),
         GroupItem(url: 'https://facebook.com/groups/bad_3', status: 'bad'),
@@ -224,7 +197,12 @@ void main() {
         if (g.status == 'bad') {
           hayMalo = true;
         } else {
-          expect(hayMalo, isFalse, reason: "Ningún grupo activo debe aparecer después de un grupo 'bad'");
+          expect(
+            hayMalo,
+            isFalse,
+            reason:
+                "Ningún grupo activo debe aparecer después de un grupo 'bad'",
+          );
         }
       }
 
@@ -240,8 +218,20 @@ void main() {
 
     test('Aleatorización en bloques de 25 relega los grupos malos al final de las cuentas', () {
       final List<GroupItem> listaGrande = [
-        ...List.generate(28, (i) => GroupItem(url: 'https://facebook.com/groups/active_$i', status: 'good')),
-        ...List.generate(7, (i) => GroupItem(url: 'https://facebook.com/groups/bad_$i', status: 'bad')),
+        ...List.generate(
+          28,
+          (i) => GroupItem(
+            url: 'https://facebook.com/groups/active_$i',
+            status: 'good',
+          ),
+        ),
+        ...List.generate(
+          7,
+          (i) => GroupItem(
+            url: 'https://facebook.com/groups/bad_$i',
+            status: 'bad',
+          ),
+        ),
       ];
       // Mezclar intencionalmente de entrada
       listaGrande.shuffle(Random(42));
